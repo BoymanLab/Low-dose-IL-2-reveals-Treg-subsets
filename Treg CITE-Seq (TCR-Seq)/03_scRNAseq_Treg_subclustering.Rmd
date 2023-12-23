@@ -1,0 +1,181 @@
+---
+title: "02_scRNAseq_Downstream_Jan"
+author: "docaspar"
+date: "11/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(readxl)
+library(MetBrewer)
+library(ggrepel)
+library(MatrixGenerics)
+library(msigdbr)
+library(ggpubr)
+library(readr)
+library(writexl)
+library(rasterpdf)
+library(RColorBrewer)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/02 Treg/"
+
+lupus <- readRDS(file = paste0(path.files, "lupus_clustered.rds"))
+
+colvec <- met.brewer("Monet",n=20)[c(17,10)]
+DefaultAssay(lupus) <- "integrated.adt"
+
+#load functions
+source("scRNA_functions.R")
+```
+
+# Check data
+```{r}
+p1 <- clusterplusfeature(lupus, cluster_column = "primary", dim = "umap")
+```
+
+# T cell subclustering
+First, we check the quality of our Tregs to check for potential Tcon contamination.
+```{r tcell subclustering}
+#Filter Tregs from whole PBMCs based on primary clustering.
+tcells <- lupus[,lupus@meta.data$primary == "T cells"]
+markers = c("IL7R", "IL2RA", "ENTPD1", "TIGIT")
+
+tcells <- RunUMAP(tcells,  features = markers, assay = "integrated.adt", reduction.name = "umap", reduction.key = "UMAP_")
+
+tcells <- phenograph(tcells, pf = markers, k = 30)
+
+raster_pdf(paste0(path.out, "01 Tcell subclustering.pdf"), height = 9, width = 16, res = 200)
+p1 <- clusterplusfeature(tcells, cluster_column = "pheno", dim = "umap", protein.features = markers, rna.features = "FOXP3", assay.rna = "integrated")
+dev.off()
+
+tregs <- tcells #[,tcells@meta.data$pheno != "13"] #Tregs were sorted very stringently
+```
+
+
+
+
+# Tregs
+## Phenograph
+```{r}
+# markers <- c("PDCD1", "PTPRC", "CD38", "HLA-DRA")
+# 
+# tregs <- RunUMAP(object = tregs, features = markers, reduction.name = "feature.umap", assay = "SCT")
+# tregs <- phenograph(tregs, pf = markers, rf = "PDCD1", assay.adt = "integrated.adt", assay.rna = "integrated", k = 50)
+# 
+# p1 <- clusterplusfeature(tregs, protein.features = c("PTPRC", "CD38", "HLA-DRA"), rna.features = "PDCD1", cluster_column = "pheno", dim = "feature.umap", assay.rna = "integrated", assay.adt = "integrated.adt")
+# 
+# p1 <- clusterplusfeature(tregs, rna.features = markers, cluster_column = "pheno", dim = "feature.umap", assay.rna = "SCT")
+# 
+# tregs@assays
+# DefaultAssay(tregs)
+# Keys(tregs)
+```
+
+
+## Multimodal clustering
+Does not seem to improve resolution of CD38 and HLA-DR clusters, since protein information is diluted.
+```{r}
+#tregs@assays$integrated@scale.data %>% rownames()
+raster_pdf(paste0(path.out, "02a Treg PCA RNA.pdf"), height = 9, width = 16, res = 200)
+tregs <- RunPCA(tregs, features = VariableFeatures(tregs, assay = "integrated"), assay = "integrated", reduction.name = "tregs.pca.rna", npcs = 30, verbose = FALSE)
+VizDimLoadings(tregs, dims = 1:2, reduction = "tregs.pca.rna")
+ElbowPlot(tregs, ndims = 30, reduction = "tregs.pca.rna")
+dev.off()
+
+raster_pdf(paste0(path.out, "02b Treg PCA ADT.pdf"), height = 9, width = 16, res = 200)
+tregs <- RunPCA(tregs, features = VariableFeatures(tregs, assay = "integrated.adt"), assay = "integrated.adt", reduction.name = "tregs.pca.adt", npcs = 30, verbose = FALSE)
+VizDimLoadings(tregs, dims = 1:2, reduction = "tregs.pca.adt")
+ElbowPlot(tregs, ndims = 30, reduction = "tregs.pca.adt")
+dev.off()
+
+# tregs <- FindMultiModalNeighbors(tregs, dims.list = list(1:11, 1:11), reduction.list = list("tregs.pca.rna", "tregs.pca.adt"), weighted.nn.name = "weighted.nn.treg")
+# 
+# tregs <- RunUMAP(object = tregs, reduction.name = "tregs.adt.umap", nn.name =  "weighted.nn.treg")
+# tregs <- FindClusters(tregs, graph.name = "wsnn", algorithm = 1, resolution = 0.8, verbose = FALSE)
+# 
+# raster_pdf(paste0(path.out, "03 Treg subclustering.pdf"), height = 9, width = 16, res = 200)
+# clusterplusfeature(tregs, protein.features = c("CD38", "HLA-DRA", "PTPRC", "ICOS", "PDCD1", "PECAM1", "human-TCR-V-alpha7.2"), rna.features = c("MALAT1", "IL32"), cluster_column = "seurat_clusters", dim = "tregs.adt.umap", assay.rna = "RNA")
+# dev.off()
+```
+
+
+```{r}
+tregs <- FindNeighbors(tregs, reduction = "tregs.pca.adt", dims = 1:6)
+tregs <- RunUMAP(tregs, dims = 1:6, reduction = "tregs.pca.adt")
+#tregs <- RunUMAP(tregs, dims = 1:11, reduction = "pca.adt")
+
+tregs <- FindClusters(tregs, resolution = 1.2)
+
+raster_pdf(paste0(path.out, "03 Treg subclustering.pdf"), height = 9, width = 16, res = 200)
+p1 <- clusterplusfeature(tregs, protein.features = c("CD38", "HLA-DRA", "PTPRC", "ICOS", "PDCD1", "PECAM1", "human-TCR-V-alpha7.2"), rna.features = c("MALAT1", "IL32"), cluster_column = "seurat_clusters", assay.rna = "RNA", dim = "umap")
+dev.off()
+```
+
+
+## Subcluster merging
+At the moment, the 6 clusters from phenograph are not further merged, the clustering seems adequate as it is. To maintain the pipeline structure, the clusters are "merged" into the same clusters as they already are.
+```{r tregs subclustering}
+#Merging
+(merging_tregs <- read_excel(paste0(path.files, "merge_Tregs5.xlsx")))
+
+tregs <- merge_clusters(tregs, 
+                        cluster_column = "seurat_clusters", 
+                        merging_table = merging_tregs, 
+                        merging_name = "Treg_subclusters",
+                        levels = c("HLA-DR+ CD38+ Tregs", "CD38+ Tregs", "HLA-DR+ Tregs", "resting Tregs", "naive Tregs"))
+
+
+raster_pdf(paste0(path.out, "04_Treg_merging.pdf"), height = 9, width = 16, res = 200)
+p1 <- clusterplusfeature(x = tregs, 
+                         protein.features = c("CD38", "HLA-DRA", "PTPRC", "ICOS", "PDCD1", "PECAM1", "human-TCR-V-alpha7.2"), 
+                         dim = "umap", 
+                         cluster_column = "Treg_subclusters",
+                         assay.rna = "RNA",
+                         assay.adt = "Protein")
+p1 + scale_color_manual(values = brewer.paired(12)[c(12, 8, 2, 4, 6)])
+dev.off()
+```
+
+
+```{r}
+lupus@meta.data$order <- 1:ncol(lupus)
+
+lupus@meta.data <- merge(lupus@meta.data, tregs@meta.data["Treg_subclusters"], by = 0, all = TRUE) %>% arrange(order)
+
+lupus@meta.data <- lupus@meta.data %>%
+  dplyr::mutate_at(vars(primary, Treg_subclusters), as.character)
+
+lupus@meta.data[is.na(lupus@meta.data$Treg_subclusters), "Treg_subclusters"] <- lupus@meta.data[is.na(lupus@meta.data$Treg_subclusters), "primary"]
+
+lupus@meta.data<- lupus@meta.data %>%
+  dplyr::mutate_at(vars(primary, Treg_subclusters), as.factor)
+```
+
+
+# Save subclustered Tregs
+```{r save rds}
+saveRDS(tregs, file = paste0(path.files, "Tregs_subclustered.rds"))
+saveRDS(lupus, file = paste0(path.files, "lupus_subclustered.rds"))
+```
+
+
+

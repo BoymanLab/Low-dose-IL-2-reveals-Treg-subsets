@@ -1,0 +1,166 @@
+---
+title: "02_scRNAseq_Downstream_Jan"
+author: "docaspar"
+date: "11/1/2021"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(umap)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(flowCore)
+library(Rphenograph)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(readxl)
+library(MetBrewer)
+library(MatrixGenerics)
+library(ggrepel)
+library(clustree)
+library(rasterpdf)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/Primary/"
+
+Lupus.combined <- readRDS(file = paste0(path.files, "Lupus.combined.rds"))
+lupus <- Lupus.combined[,Lupus.combined@meta.data$hash.ID != "Doublet"]
+remove("Lupus.combined")
+
+colvec <- met.brewer("Monet",n=20)[c(12,10)]
+DefaultAssay(lupus) <- "integrated.adt"
+
+#Load functions
+source("scRNA_functions.R")
+```
+
+
+# Data exploration
+## Overview
+```{r data exploration, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE}
+#pdf(paste0(path.out, "00_data_exploration.pdf"), height = 9, width = 16)
+DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5)
+DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = "predicted.celltype.l2")
+FeaturePlot(lupus, features = "nFeature_RNA", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+FeaturePlot(lupus, features = "nFeature_Protein", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+#dev.off()
+```
+
+# Elbowplot
+```{r elbowplots and feature plots, warning=FALSE, message=FALSE, fig.height=9, fig.width=16}
+#Lupus.combined@reductions
+pdf(paste0(path.out, "01_PCA_Elbowplot.pdf"), height = 9, width = 16)
+ElbowPlot(lupus, reduction = "pca", ndims = 30)
+ElbowPlot(lupus, reduction = "pca.adt", ndims = 30)
+dev.off()
+```
+
+# Primary Clustering
+```{r primary clustering}
+#define lineage markers
+lineage_markers <- c("CD3D-Protein", "CD19-Protein", "CD4-Protein", "CD8A-Protein", "CD14-Protein", "FCGR3A-Protein", "NCAM1-Protein", "HLA-DRA-Protein", "IL2RA-Protein", "ITGAX-Protein", "ITGAM-Protein", "IL3RA-Protein", "IL7R-Protein", "CD27-Protein", "IGHD-Protein", "PTPRC-Protein", "CCR7-Protein", "human-TCR-alpha/beta-Protein", "THBD-Protein", "C5AR1-Protein", "FCER1A-Protein") #, "CR2-Protein", "CD163-Protein"
+
+
+#Run UMAP with lineage markers
+lupus <- RunUMAP(lupus,  features = lineage_markers, assay = "integrated.adt", reduction.name = "umap", reduction.key = "UMAP_")
+
+#pdf(paste0(path.out, "02_flowSOM_27_oneshot.pdf"), height = 9, width = 16)
+#DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5, group.by = "flowsom", cols = brewer.paired(n = maxK))
+#FeaturePlot(lupus, features = lineage_markers, reduction = 'wnn.umap', cols = viridis(200))
+#clusthm(lupus, lineage_markers, cluster_column = "flowsom")
+lupus <- flowsom(x = lupus, pf = lineage_markers, assay.adt = "integrated.adt", maxK = 27)
+clusterplusfeature(lupus, protein.features = lineage_markers, cluster_column = "flowsom", dim = "umap")
+#dev.off()
+
+```
+
+# Primary Merging
+```{r primary merging}
+#merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v4.xlsx"))
+#merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v5.xlsx"), range = "A1:B36")
+#(merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v7.xlsx")))
+#(merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v8.xlsx")))
+#(merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v9.xlsx")))
+#(merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v10.xlsx")))
+(merging_table1 <- read_excel(paste0(path.files, "cluster_annotation_v11.xlsx")))
+# lupus@meta.data$order <- 1:nrow(lupus@meta.data)
+# coldata <- lupus@meta.data[c("order", "flowsom")]
+# coldata <- merge(coldata, merging_table1)
+# coldata <- coldata[order(coldata$order),]
+# 
+# lupus@meta.data$primary <- coldata$primary
+# lupus@meta.data$primary <- factor(lupus@meta.data$primary)
+
+lupus <- merge_clusters(lupus, cluster_column = "flowsom", merging_table = merging_table1, merging_name = "primary")
+
+
+#pdf(paste0(path.out, "03_merging_27_oneshot.pdf"), height = 9, width = 16, onefile = TRUE)
+# DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5, group.by = "primary", cols = brewer.paired(n = unique(merging_table1$primary) %>% length()))
+# DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5, group.by = "flowsom", cols = brewer.paired(n = maxK))
+#clusterplusfeature(lupus, pf = lineage_markers, cluster_column = "primary")
+#clusterplusfeature(lupus, cluster_column = "flowsom")
+
+#clusterplusfeature(lupus, cluster_column = "flowsom", dim = "umap")
+clusterplot <- clusterplusfeature(lupus, protein.features = lineage_markers, cluster_column = "primary", dim = "umap", hml = FALSE, ncol = 6)
+
+#dev.off()
+
+#raster_pdf(paste0(path.out, "03a_merging_27_oneshot.pdf"), height = 9, width = 11, res = 200)
+plot_DR(x = lupus, color_by = "primary", dim = "umap", hml = FALSE)
+#dev.off()
+
+raster_pdf(paste0(path.out, "03a_merging_27_oneshot_labelless.pdf"), height = 9, width = 11, res = 200)
+plot_DR(x = lupus, color_by = "primary", dim = "umap", hml = FALSE, cll = FALSE)
+dev.off()
+
+#raster_pdf(paste0(path.out, "03b_merging_27_oneshot.pdf"), height = 8, width = 12, res = 200)
+plot_DR(x = lupus, color_by = lineage_markers, dim = "umap", hml = FALSE)
+#dev.off()
+
+#pdf(paste0(path.out, "03c_merging_27_oneshot.pdf"), height = 9, width = 11)
+clusthm(lupus, protein.features = lineage_markers, cluster_column = "primary") %>% print()
+#dev.off()
+```
+
+## Save .rds file
+```{r save .rds}
+lupus@meta.data <- lupus@meta.data %>% 
+  mutate("copy" = hash.ID) %>%
+  separate(copy, into = c("patient_id", "timepoint"))
+
+saveRDS(lupus, file = paste0(path.files, "lupus_clustered_k27_oneshot.rds"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

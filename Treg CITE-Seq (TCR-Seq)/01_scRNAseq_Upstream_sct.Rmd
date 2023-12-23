@@ -1,0 +1,307 @@
+---
+title: "01a scRNAseq Filtering and Integration"
+author: "docaspar"
+date: "11/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+# This is the analysis of the Lupus project Pilot experiment.
+The experiment was done on the 09.04.2021. Sequencing library prep was done on the week 12. - 16.4. 
+Sequencing results were received on the 27.4. 
+Demultiplexing was done by Simona using the cellranger Multi pipeline. Surface protein libraries were specified as "Antibody capture"
+and Cellranger was run with "force cells" activated and set to 20.000 cells per sample.
+In this script, I will try to combine 
+Dataset filtering
+Dataset integration
+SNP data addition and further cell filtering
+VDJ addition
+WNN analysis for dimensionality reduction
+Cell type annotation
+
+# Loading packages
+```{r libs, message=FALSE}
+library(Seurat)
+library(scRepertoire)
+library(tidyverse)
+library(patchwork)
+library(umap)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(readr)
+library(readxl)
+```
+
+# Set paths
+```{r set paths}
+# Clearing the environment
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.out <- "../R_out/00 Integration/"
+
+data.dir1 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_1_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_1_DS/count/sample_feature_bc_matrix")
+data.dir2 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_2/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_2/count/sample_feature_bc_matrix")
+data.dir3 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_3/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_3/count/sample_feature_bc_matrix")
+data.dir4 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_4/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_4/count/sample_feature_bc_matrix")
+data.dir6 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_6_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_6_DS/count/sample_feature_bc_matrix")
+data.dir7 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_7_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_7_DS/count/sample_feature_bc_matrix")
+data.dir8 <- paste0( path.data, "multi_exp027_Lupus_Tregs_Sample_8_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_8_DS/count/sample_feature_bc_matrix")
+```
+
+# Load Data
+Loading the data into R
+```{r import data}
+Lupus1.data <- Read10X(data.dir = data.dir1)
+Lupus2.data <- Read10X(data.dir = data.dir2)
+Lupus3.data <- Read10X(data.dir = data.dir3)
+Lupus4.data <- Read10X(data.dir = data.dir4)
+Lupus6.data <- Read10X(data.dir = data.dir6)
+Lupus7.data <- Read10X(data.dir = data.dir7)
+Lupus8.data <- Read10X(data.dir = data.dir8)
+
+lupus.list <- list(Lupus1.data, Lupus2.data, Lupus3.data, Lupus4.data, Lupus6.data, Lupus7.data, Lupus8.data)
+```
+
+# Load antibody cocktail lists
+Compile complete list for antibody cocktails and rename rows of protein assay accordingly
+```{r rename antibodies}
+(lista <- read_csv(paste0(path.files, "TotalSeq_C_Human_Universal_Cocktail_399905_Antibody_reference_UMI_counting.csv")))
+(listb <- read_excel(paste0(path.files, "TotalSeq_C_Human_Universal_Cocktail_v1_137_Antibodies_399905_Barcodes.xlsx")))
+me <- merge(lista[c("name", "sequence")], listb[c("Barcode", "Gene name")], by.x = "sequence", by.y = "Barcode")
+
+protein.list <- read_excel(paste0(path.files, "20221003_04_Barcodes.xlsx"), range = "C16:E19") %>% 
+  dplyr::select(Barcode, Antigen) %>%
+  dplyr::rename("Gene name" = Antigen, "sequence" = Barcode) %>%
+  mutate(name = c("CD197", "CD197.1", "CD197.2"))
+
+protein.list <- bind_rows(protein.list, me)
+
+lupus.list <- lapply(X = lupus.list, FUN = function(x){
+  o <- match(protein.list$name, x$`Antibody Capture`@Dimnames[[1]])
+  rownames(x$`Antibody Capture`)[o] <- protein.list$`Gene name`
+  return(x)
+})
+```
+
+# Create seurat object
+Create Seurat object with RNA data and add HTO and protein data.
+```{r create seurat objects}
+# Seurat Objects are created using the Gene expression data.
+lupus.list <- lapply(X = lupus.list, function(x){
+  y <- CreateSeuratObject(counts = x$`Gene Expression`)
+  y[["HTO"]] <- CreateAssayObject(counts = x$`Antibody Capture`[c(1:8),])
+  y[["Protein"]] <- CreateAssayObject(counts = x$`Antibody Capture`[c(9:148),])
+  return(y)
+})
+```
+
+# Transcript count and mtRNA QC plots
+This filtering step will remove the bad quality cells based on the gene expression data. 
+Cells removed will also be removed in the assay data.
+```{r QC plots, fig.height=4, fig.width=7}
+lupus.list <- lapply(X = lupus.list, function(x){
+  x[["percent.mt"]] <- PercentageFeatureSet(x, pattern = "^MT-")
+  return(x)
+})
+
+pdf(paste0(path.out, "01_nFeature_filtering_QCplot.pdf"), height = 5, width = 8, onefile = TRUE)
+lupus.list_batch1 <- list(lupus.list[[2]], lupus.list[[3]], lupus.list[[4]])
+
+for(a in lupus.list_batch1){
+  p1 <- VlnPlot(a, features = c("nFeature_RNA"))+
+    geom_hline(yintercept = 600, col = "red")+
+    geom_hline(yintercept = 4000, col = "red")+
+    theme(legend.position = "none")
+
+  p2 <- VlnPlot(a, features = c("percent.mt"))+
+    geom_hline(yintercept = 12, col = "red")+
+    theme(legend.position = "none")
+  
+  plot_grid(p1, p2, ncol = 2) %>% print()
+}
+
+lupus.list_batch2 <- list(lupus.list[[1]], lupus.list[[5]], lupus.list[[6]], lupus.list[[7]])
+
+for(a in lupus.list_batch2){
+  p1 <- VlnPlot(a, features = c("nFeature_RNA"))+
+    geom_hline(yintercept = 500, col = "red")+
+    geom_hline(yintercept = 2300, col = "red")+
+    theme(legend.position = "none")
+
+  p2 <- VlnPlot(a, features = c("percent.mt"))+
+    geom_hline(yintercept = 8, col = "red")+
+    theme(legend.position = "none")
+  
+  plot_grid(p1, p2, ncol = 2) %>% print()
+}
+dev.off()
+```
+
+# QC filtering
+```{r QC filtering}
+for(x in lupus.list_batch1){
+  print(nrow(x@meta.data[x@meta.data$percent.mt < 12 &
+                     x@meta.data$nFeature_RNA > 600 &
+                     x@meta.data$nFeature_RNA < 4000,])/nrow(x@meta.data))
+}
+
+for(x in lupus.list_batch2){
+  print(nrow(x@meta.data[x@meta.data$percent.mt < 8 &
+                     x@meta.data$nFeature_RNA > 500 &
+                     x@meta.data$nFeature_RNA < 2300,])/nrow(x@meta.data))
+}
+
+lupus.list_batch1.2 <- lapply(X = lupus.list_batch1, FUN = function(x) {
+  x <- subset(x, subset = nFeature_RNA > 600 & nFeature_RNA < 4000 & percent.mt < 12)
+})
+
+lupus.list_batch2.2 <- lapply(X = lupus.list_batch2, FUN = function(x) {
+  x <- subset(x, subset = nFeature_RNA > 500 & nFeature_RNA < 2300 & percent.mt < 8)
+})
+
+
+lupus.list <- list(lupus.list_batch2.2[[1]], 
+     lupus.list_batch1.2[[1]], 
+     lupus.list_batch1.2[[2]], 
+     lupus.list_batch1.2[[3]],
+     lupus.list_batch2.2[[2]],
+     lupus.list_batch2.2[[3]],
+     lupus.list_batch2.2[[4]])
+
+# How many cells are left in each of the three datasets?
+for(x in lupus.list){
+  print(nrow(x@meta.data))
+}
+```
+
+#Demultiplexing based on Hashing HTOs
+idk why we normalized with margin = 2, seurat vignette "Demultiplexing with hashtag oligos (HTOs)" uses margin = 1
+```{r demux, fig.width=16, fig.height=9}
+# Now, normalization of the Gene expression data and of the assay data is done.
+# Here, I am not sure about the margin setting. Currently, I am following the suggested code from the Satija lab.
+lupus.list <- lapply(X = lupus.list, FUN = function(x){
+  #x <- NormalizeData(x)
+  x <- NormalizeData(x, assay = "HTO", normalization.method = "CLR")
+  #x <- NormalizeData(x, assay= "Protein", normalization.method = "CLR", margin = 2)
+})
+
+# Demultiplexing based on the HTOs is done
+lupus.list <- lapply(X = lupus.list, FUN = function(x){
+  x <- HTODemux(x, assay = "HTO", positive.quantile = 0.99)
+
+})
+
+# I notice that background signals seem to be good overall (low Cutoff reads) but there is one outlayer in the second dataset (Cutoff 276 reads).
+# This is surprising since all datasets were prepared from the same sample pool
+
+pdf(paste0(path.out, "02_HTO_Demux_QCplot.pdf"), height = 9, width = 16, onefile = TRUE)
+for(x in lupus.list){
+  table(x$HTO_classification.global) %>% print()
+  Idents(x) <- "HTO_maxID"
+  RidgePlot(x, assay = "HTO", features = rownames(x[["HTO"]])[1:8], ncol = 3) %>% print()
+}
+dev.off()
+```
+
+# Data integration
+RNA and Protein data are integrated separately
+```{r data integration}
+lupus.list <- lapply(X = lupus.list, FUN = function(x){
+  x <- SCTransform(x, method = "glmGamPoi")
+})
+
+for(i in 1:length(lupus.list)){
+  lupus.list[[i]] <- RenameCells(object = lupus.list[[i]], add.cell.id = LETTERS[i])
+  lupus.list[[i]]@meta.data$lane <- paste("Lane", LETTERS[i], sep = "_")
+}
+
+features.RNA <- SelectIntegrationFeatures(object.list = lupus.list, nfeatures = 3000)
+lupus.list <- PrepSCTIntegration(object.list = lupus.list, anchor.features = features.RNA)
+anchors.RNA <- FindIntegrationAnchors(object.list = lupus.list, normalization.method = "SCT", anchor.features = features.RNA)
+lupus.combined <- IntegrateData(anchorset = anchors.RNA, normalization.method = "SCT")
+
+# From here on, I am following the instructions for integration from:
+# https://satijalab.org/seurat/articles/integration_introduction.html
+# Create a list containing the three datasets
+
+# Select features that are repeatedly variable across datasets for integration
+# The integration is done independently for the RNA and the Protein assay.
+lupus.list <- lapply(X = lupus.list, FUN = function(x) {
+    x <- NormalizeData(x, assay= "Protein", normalization.method = "CLR", margin = 2)
+})
+
+features.Protein <- SelectIntegrationFeatures(object.list = lupus.list, assay = rep("Protein", 7))
+anchors.Protein <- FindIntegrationAnchors(object.list = lupus.list, anchor.features = features.Protein, assay = rep("Protein", 7)) # Perform integration. This command requires long time / a lot of computational resources to run (27 min on the Server).
+Lupus.combined.Protein <- IntegrateData(anchorset = anchors.Protein, new.assay.name = "integratedProtein") # This command creates an 'integrated' data assay in a new Seurat object.
+```
+
+# Combine assays
+```{r combine assays}
+adt.data <- GetAssayData(object =  Lupus.combined.Protein[['integratedProtein']], slot = 'data')
+lupus.combined[["integrated.adt"]] <- CreateAssayObject(data = adt.data)
+lupus.combined <- ScaleData(lupus.combined, assay = "integrated.adt", slot = "data") #scale if not scaled previously
+lupus.combined@assays$integrated@scale.data %>% dim()
+```
+
+
+```{r intermediate save RDS}
+saveRDS(lupus.combined, file = paste0(path.files, "20221115_Seurat_integrated_noTCR.rds"))
+```
+
+# Combining TCR & BCR
+```{r}
+BCR1 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_1_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_1_DS/vdj_b/filtered_contig_annotations.csv"))
+BCR2 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_2/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_2/vdj_b/filtered_contig_annotations.csv"))
+BCR3 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_3/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_3/vdj_b/filtered_contig_annotations.csv"))
+BCR4 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_4/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_4/vdj_b/filtered_contig_annotations.csv"))
+BCR6 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_6_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_6_DS/vdj_b/filtered_contig_annotations.csv"))
+BCR7 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_7_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_7_DS/vdj_b/filtered_contig_annotations.csv"))
+BCR8 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_8_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_8_DS/vdj_b/filtered_contig_annotations.csv"))
+
+TCR1 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_1_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_1_DS/vdj_t/filtered_contig_annotations.csv"))
+TCR2 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_2/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_2/vdj_t/filtered_contig_annotations.csv"))
+TCR3 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_3/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_3/vdj_t/filtered_contig_annotations.csv"))
+TCR4 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_4/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_4/vdj_t/filtered_contig_annotations.csv"))
+TCR6 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_6_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_6_DS/vdj_t/filtered_contig_annotations.csv"))
+TCR7 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_7_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_7_DS/vdj_t/filtered_contig_annotations.csv"))
+TCR8 <- read.csv(paste0(path.data, "multi_exp027_Lupus_Tregs_Sample_8_DS/outs/per_sample_outs/multi_exp027_Lupus_Tregs_Sample_8_DS/vdj_t/filtered_contig_annotations.csv"))
+
+contig_list_bcr <- list(BCR1,BCR2,BCR3, BCR4, BCR6, BCR7, BCR8)
+contig_list_tcr <- list(TCR1,TCR2,TCR3, TCR4, TCR6, TCR7, TCR8)
+
+BCRcombined <- combineBCR(contig_list_bcr, samples = LETTERS[c(1:7)], ID = rep("", 7))
+TCRcombined <- combineTCR(contig_list_tcr, samples = LETTERS[c(1:7)], ID = rep("", 7))
+
+BCRcombined <- lapply(X = BCRcombined, FUN = function(x){
+  x$barcode <- str_replace_all(x$barcode, "__", "_")
+  return(x)
+})
+
+TCRcombined <- lapply(X = TCRcombined, FUN = function(x){
+  x$barcode <- str_replace_all(x$barcode, "__", "_")
+  return(x)
+})
+
+TCRBCRcombined <- c(BCRcombined, TCRcombined)
+
+lupus.combined <- combineExpression(TCRBCRcombined, lupus.combined, cloneCall="aa", proportion = F, cloneTypes=c(Single=1, Small=5, Medium=20, Large=100, Hyperexpanded=500))
+```
+
+
+# Add assay keys
+```{r}
+Key(lupus.combined[["RNA"]]) <- "rna_"
+Key(lupus.combined[["Protein"]]) <- "adt_"
+```
+
+
+```{r save RDS}
+saveRDS(lupus.combined, file = paste0(path.files, "20221115_Seurat_integrated.rds"))
+```

@@ -1,0 +1,214 @@
+---
+title: "Untitled"
+author: "docaspar"
+date: "11/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.height = 9, fig.width = 16, root.dir = ".")
+```
+
+```{r libs, message=FALSE}
+library(edgeR)
+library(tidyverse)
+#library(data.table)
+#library(ganalyse)
+#library(gridExtra)
+library(ggrepel)
+#library(msigdbr)
+#library(biomaRt)
+library(ggpubr)
+#library(cowplot)
+library(fgsea)
+library(writexl)
+```
+
+
+
+# Set paths
+```{r load_sce}
+rm(list = ls())
+
+path.data <- "../Data/Kallisto_counts/"
+path.files <- "../R_files/"
+#path.out <- "../R_out_test2/"
+path.out <- "../R_out_Cytosig/"
+
+#load functions
+source("bulkRNAseq_functions Kopie.R")
+```
+
+# Load data
+```{r load STAR data}
+#Count data
+#count_data <- read.csv(file = paste0(path, "count_table.csv"), header = TRUE, check.names = FALSE)
+count_data <- readRDS(file = paste0(path.files, "count_table.rds"))
+
+#meta data
+#meta <- read.csv(file = paste0(path, "meta.csv"), header = TRUE, check.names = FALSE)
+meta <- readRDS(file = paste0(path.files, "meta.rds"))
+
+#gene meta
+#gene_meta <- read.csv(file = paste0(path, "gene_meta.csv"), header = TRUE)
+gene_meta <- readRDS(file = paste0(path.files, "gene_meta.rds"))
+
+#genesetlibs for GSEA
+genesetlibs <- readRDS(file = paste0(path.files, "genesetlibs.rds"))
+```
+
+# Exploratory data analysis
+```{r}
+y <- prepDGE(cd = count_data, md = meta, gmd = gene_meta)
+y$samples
+
+keep <- filterByExpr(y)
+y <- y[keep,,keep.lib.sizes=FALSE]
+
+y <- calcNormFactors(y) #normalize for lib size
+
+mds.p <- plot_MDS(y, md = meta, color_by = "ct", sample_id = "sample_id")
+
+pdf(paste0(path.out, "MDS_celltypes.pdf"), height = 5, width = 8)
+mds.p + labs(title = paste0("Low-dose IL-2 in SLE: Bulk RNA Seq MDS plot"), color = "Cell Type")
+dev.off()
+```
+
+
+# Volanco plot labels
+```{r}
+tregsv3 <- c("SELENOM", "TNFRSF13C", "TNK1", "CEMIP", "SPINK2", "ATP9A", "LCN10", "SLC13A4", "CD300LD", "HBD", "CA6", "CDKN2B", "ALAS2", "LGALS9C", "ITGAM", "EPHB1", "MPO", "CXCR1", "CD33", "SOCS1", "CEACAM1", "NKG7", "CD80", "MTMR11", "APOBEC3H", "MUC1", "XPNPEP2", "CCR1", "CDKN2A", "GSDMA", "CDKN1A", "ACTG2", "PLXNB2", "CES4A", "SOCS2", "MEOX1", "SLCO4A1", "DNAAF4", "DSC2", "STAC", "TNFRSF18", "CD70", "SCD", "COL9A2", "TNFRSF4", "LGALS3", "ZBTB32", "SERPINE2", "FOSL2", "DENND6B", "LRRC32", "NQO1", "LIMS2", "CISH", "CALML4", "HPGD", "TSPAN15", "LGALS1", "ARNTL2", "HLA-DRA", "ELOVL6", "LRG1", "FBXO6")
+tregsv9 <- c("RNF113B", "TNFRSF13C", "SLC45A1", "HECTD2", "HHIPL1", "MAGED4", "IFNG", "NAV2", "CD300LD", "SLC35F3", "CDKN2B", "HBEGF", "ITGAM", "CEACAM1", "PKD1L3", "CA6", "EPHB1", "SIGLEC12", "CXCR1", "OSM", "CD80", "JUP", "CD33", "WDFY4", "MUC1", "MEOX1", "SOCS1", "GSDMA", "SOCS2", "RGS16", "LRRC32", "CES4A", "HSD3B7", "MTMR11", "CISH", "TNFRSF18", "BHLHE40", "TNFRSF4", "IL1R1", "CCR1", "SGK1", "XPNPEP2", "FOSL2", "LGALS9C", "MYB", "SCD", "CDKN1A", "RHPN1", "DNAAF4", "PLXNB2", "ASB9", "CDKN2A", "TSPAN15", "SERPINE2", "TNFRSF11A", "LTA", "SLCO4A1", "APOBEC3H", "LIPN", "FAIM2", "ACY1", "GRAMD1C", "IL2RA", "SMPD3", "IKZF4", "MB21D2", "PIM1", "NOS3", "GSDMB", "DENND6B", "ABCA1", "LIMS2", "SLC50A1", "COL9A2", "GLUL", "RRAS2", "TIMP1", "CMTM6", "MAPKAPK3", "LGALS3", "ENO3", "LRP1", "GCNA", "RAB11FIP1", "ZBTB32", "TNFRSF8", "FGD2", "LRG1")
+tregs <- list("V3vsV2" = tregsv3, "V9vsV2" = tregsv9)
+
+tconv9 <- c("TLR4", "CD36", "EID2", "PDCD5", "IGHA1")
+tcon <- list("V9vsV2" = tconv9)
+
+labels <- list("Treg" = tregs, "Tcon" = tcon)
+```
+
+
+```{r}
+out <- list()
+for(celltype in c("Treg", "Tcon", "CD8", "CD19")){
+  print(celltype)
+  #filter meta data and count data for celltype
+  meta_ct <- meta %>% 
+    dplyr::filter(ct == celltype & tp != "H") %>%
+    mutate_at(vars(id, ct, tp), droplevels)
+  
+  count_data_ct <- count_data %>% dplyr::select(meta_ct$sample_id)
+  
+  #create DGE object
+  y <- prepDGE(cd = count_data_ct, md = meta_ct, gmd = gene_meta)
+
+  #filter out genes that are not expressed by at least all samples in one condition
+  keep <- filterByExpr(y)
+  table(keep)
+  y <- y[keep,,keep.lib.sizes=FALSE]
+  
+  #normalize for lib size
+  y <- calcNormFactors(y) 
+  
+  #extract count data
+  # count_data.ct <- cpm(y, normalized.lib.sizes=TRUE) %>% as.data.frame()
+  # rownames(count_data.ct) <- y$genes$hgnc_symbol
+  
+  #plot MDS; this is bugged since a recent update, check possible fixes or workarounds
+  mds.p <- plot_MDS(y, md = meta_ct, color_by = "tp") + labs(title = paste0("Low-dose IL-2 in SLE: Bulk RNA Seq MDS plot ", celltype), color = "Time point")
+  pdf(paste0(path.out, paste0("MDS_", celltype, ".pdf")), height = 5, width = 8)
+  print(mds.p)
+  dev.off()
+
+  #Design matix: include timepoint and patient id as variables with the intent to compare timepoints corrected for patients
+  design <- model.matrix(~0+meta_ct$tp+meta_ct$id)
+  rownames(design) <- meta_ct$sample_id
+  
+  #estimate dispersion
+  y <- estimateDisp(y, design)
+  
+  #fit GLM model
+  fit <- glmQLFit(y,design)
+  
+  #Define which contrasts (i.e. comparisons) to test; refers to the columns of the design matrix.
+  contrasts <- list(c(-1,1,0, rep(0,11)), c(-1,0,1, rep(0,11)))
+  names(contrasts) <- c("V3vsV2", "V9vsV2")
+  
+  #Loop through contrasts to test one by one.
+  volcs <- list()
+  bar <- list()
+  enrich <- list()
+  for(i in 1:length(contrasts)){
+    print(names(contrasts)[i])
+    #test GLM model and extract DGE
+    QLFTest <- glmQLFTest(fit,contrast = contrasts[[i]])
+    toptags <- topTags(QLFTest, n = nrow(QLFTest))$table
+    write_xlsx(toptags, paste0(path.out, celltype, "_toptags", "_", names(contrasts)[i], ".xlsx"))
+    
+    #use DGE for volcano plot
+    p1 <- plot_volcano(toptags = toptags, xlims = c(-5.5, 5.5), ylims = c(0,6), labels = labels[[celltype]][[names(contrasts)[i]]]) + labs(title = paste(celltype, names(contrasts)[i]))
+    volcs[[i]] <- p1
+    
+    #Run GSEA
+    fgsea_res <- run_gsea(toptags = toptags, gsl = genesetlibs$h_gene_sets, n_perm = 1000)
+    write_xlsx(fgsea_res, paste0(path.out, celltype, "_Hallmarks_GSEA", "_", names(contrasts)[i], ".xlsx"))
+
+    barplot <- gsea_barplot(fgsea_res = fgsea_res) +labs(title = paste(celltype, names(contrasts)[i]))
+    bar[[i]] <- barplot
+
+    # #Use GSEA results for enrichment plots
+    ##### This is bugged at the moment, bug in the package so we cant fix it easily
+    # enrichment_plots <- plot_gsea(fgsea_res, genesets = genesetlibs$h_gene_sets, toptags = toptags, plot_title = paste(celltype, names(contrasts)[i]))
+    # pdf(paste0(path.out, "Hallmarks_gsea_enrichmentplots_", celltype, "_", names(contrasts)[i], "_large.pdf"), width = 7, height = 5, onefile = TRUE)
+    # enrichment_plots %>% print()
+    # dev.off()
+  }
+  out[[celltype]] <- list("volcs" = volcs, "bar" = bar)
+}
+```
+
+# print output
+```{r}
+pdf(paste0(path.out, "symmetrical_volcanos.pdf"), width = 16, height = 9, onefile = TRUE)
+out$Treg$volcs
+out$Tcon$volcs
+out$CD8$volcs
+out$CD19$volcs
+dev.off()
+
+pdf(paste0(path.out, "gsea_barplots.pdf"), width = 16, height = 9, onefile = TRUE)
+out$Treg$bar
+out$Tcon$bar
+out$CD8$bar
+out$CD19$bar
+dev.off()
+```
+
+# Wrapper
+Trying to build a wrapper for the DGE and GSEA. Not sure this makes sense, could be an option for the Github pipeline
+```{r, eval=FALSE}
+for(celltype in unique(meta$ct)){
+  #filter meta data and count data for celltype
+  meta_ct <- meta %>% 
+    dplyr::filter(ct == celltype & tp != "H") %>%
+    mutate_at(vars(id, ct, tp), droplevels)
+  
+  count_data_ct <- count_data %>% dplyr::select(meta_ct$sample_id)
+  
+  #Design matix: include timepoint and patient id as variables with the intent to compare timepoints corrected for patients
+  design <- model.matrix(~0+meta_ct$tp+meta_ct$id)
+  rownames(design) <- meta_ct$sample_id
+  
+  #Define which contrasts (i.e. comparisons) to test; refers to the columns of the design matrix.
+  contrasts <- list(c(-1,1,0, rep(0,11)), c(-1,0,1, rep(0,11)))
+  names(contrasts) <- c("V3vsV2", "V9vsV2")
+  wrapper(count_data = count_data_ct, md = meta_ct, gmd = gene_meta, gs = genesetlibs, 
+          design = design, contrasts = contrasts, 
+          run_GSEA = TRUE, plot_volc = TRUE, plot_GSEA = TRUE, plot_Enrichment = TRUE, 
+          write_excel = TRUE, excel_identifier = celltype,
+          volc.x = c(-5.5, 5.5), volc.y = c(0,6))
+}
+
+```
+
+

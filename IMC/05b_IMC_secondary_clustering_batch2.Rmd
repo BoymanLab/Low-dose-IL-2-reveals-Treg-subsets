@@ -1,0 +1,389 @@
+---
+title: "04_IMC_secondary_clustering"
+author: "docaspar"
+date: "10/25/2021"
+output: html_document
+---
+Adapting secondary clustering for 2nd batch
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+# Load libraries
+```{r libs}
+library(SingleCellExperiment)
+library(tidyverse)
+library(CATALYST)
+library(scater)
+library(rstudioapi)
+library(readxl)
+library(xlsx)
+#library(clustree) Archive
+library(Rphenograph)
+library(clustree)
+library(pals)
+library(MetBrewer)
+```
+
+# Load SCE object
+New SCE objects are created with 01_Generate_SCE_object.rmd for IMC data. 
+```{r load_sce}
+#Clear R's memory
+rm(list=ls())
+
+setwd(dirname(getActiveDocumentContext()$path)) #set wd to location of this file (.Rmd)
+getwd()
+
+path.data = "../Data/cpout_batch2/"
+path.files <- "../R_Files/cpout_batch2/"
+path.out <- "../R_out/cpout_batch2/"
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+colvec_ct <- met.brewer("Signac", 19)[c(1, 4:6, 8, 10, 13, 16:19)]
+names(colvec_ct) <- ct
+
+sce = readRDS(file = paste0(path.files, "sce_batch2_clustered_merged.rds"))
+
+
+```
+
+# T cell cluster
+## Exploration
+```{r}
+sceTcells <- sce[,colData(sce)$primary_clustering == "Tcells"] #This line replace filterSCE, which was buged somehow..
+metadata(sceTcells) <- list()
+coldata <- as.data.frame(colData(sceTcells))
+colData(sceTcells) <- DataFrame(dplyr::select(coldata, - c("meta21")))
+
+#load marker_classes for secondary clustering
+secondary <- read_excel(paste0(path.files, "marker_classes_secondary_Tcells.xlsx"))
+rowdata <- as.data.frame(rowData(sceTcells))
+rowdata <- rowdata %>% dplyr::select(- c("marker_class", "used_for_clustering")) #replace primary marker classes with secondary
+rowdata <- merge(rowdata, secondary, by = "Target")
+rowData(sceTcells) <- DataFrame(rowdata[order(rowdata$channel),])
+type_markers(sceTcells)
+
+set.seed(1234)
+sceTcells <- runDR(sceTcells, dr = "UMAP", features = "type")
+
+plotDR(sceTcells, "UMAP", color_by = type_markers(sceTcells), ncol = round(sqrt(16*length(type_markers(sceTcells))/9)), assay = "exprs")+
+    geom_point(size = min(3, 5000/ncol(sceTcells)))
+```
+
+## T cell subclustering
+```{r Tcells Phenograph, message=FALSE}
+set.seed(1234)
+phenoresults <- Rphenograph(t(assay(filterSCE(sceTcells, marker_class == "type"), "exprs")), k = 10) #original k = 15, k = 12 captures CD8 Temras better
+
+#Add phenograph cluster_ids to sce object
+colData(sceTcells)$pheno <- as.factor(membership(phenoresults[[2]]))
+sceTcells$cluster_id <- as.factor(membership(phenoresults[[2]]))
+metadata(sceTcells)$cluster_codes <- data.frame(
+    custom = factor(levels(as.factor(membership(phenoresults[[2]]))), levels = levels(as.factor(membership(phenoresults[[2]])))))
+
+pdf(paste0(path.out, "05_batch2_secondary_Tcells_phenograph.pdf"), height = 9, width = 16, onefile = TRUE)
+plotExprHeatmap(sceTcells, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+plotDR(sceTcells, "UMAP", color_by = "pheno") + scale_color_brewer(palette = "Paired")+
+    geom_point(size = min(3, 5000/ncol(sceTcells)))
+
+plotDR(sceTcells, "UMAP", color_by = type_markers(sceTcells), ncol = round(sqrt(16*length(type_markers(sceTcells))/9)), assay = "exprs")+
+    geom_point(size = min(3, 5000/ncol(sceTcells)))
+
+dev.off()
+```
+
+## merge Tcell subclusters
+```{r merge Tcells}
+(merging_table1 <- read_excel(paste0(path.files, "merged_clusters_Tcells.xlsx")))
+sceTcells <- mergeClusters(sceTcells, k = "custom", table = merging_table1, id = "merging1")
+
+pdf(paste0(path.out, "06_batch2_secondary_Tcells_merged.pdf"), height = 9, width = 16, onefile = TRUE)
+plotDR(sceTcells, "UMAP", color_by = "merging1") + 
+    labs(title = "IMC T cells Secondary Clustering", col = "Cell type") + 
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    scale_color_manual(values = colvec_ct[1:4])+
+    geom_point(size = min(3, 5000/ncol(sceTcells)))
+
+plotDR(sceTcells, "UMAP", color_by = "merging1", facet_by = "Timepoint") + 
+    geom_point(size = min(3, 5000/ncol(sceTcells)))+
+    labs(title = "IMC T cells Secondary Clustering", col = "Cell type") + 
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    scale_color_manual(values = colvec_ct[1:4])
+
+
+plotExprHeatmap(sceTcells, features = "type",
+    by = "cluster_id", k = "merging1",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+dev.off()
+
+code <- cluster_codes(sceTcells)[,c("custom", "merging1")]
+coldata <- as.data.frame(colData(sceTcells))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "custom")
+colData(sceTcells) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+table(colData(sceTcells)[,c("merging1", "Timepoint")])
+```
+
+
+# APC cluster
+## secondary clustering APCs
+```{r pheno APCs, message=FALSE}
+#Filter for cluster/cell type
+sceAPCs <- sce[,colData(sce)$primary_clustering == "APCs"]
+metadata(sceAPCs) <- list()
+coldata <- as.data.frame(colData(sceAPCs))
+colData(sceAPCs) <- DataFrame(dplyr::select(coldata, - c("meta21")))
+
+#load marker_classes for secondary clustering
+(secondary <- read_excel(paste0(path.files, "marker_classes_secondary_APCs.xlsx")))
+rowdata <- as.data.frame(rowData(sceAPCs))
+rowdata <- rowdata %>% dplyr::select(- c("marker_class", "used_for_clustering")) #replace primary marker classes with secondary
+rowdata <- merge(rowdata, secondary, by = "Target")
+rowData(sceAPCs) <- DataFrame(rowdata[order(rowdata$channel),])
+
+set.seed(1234)
+sceAPCs <- runDR(sceAPCs, dr = "UMAP", features = "type")
+plotDR(sceAPCs, "UMAP", color_by = type_markers(sceAPCs), ncol = round(sqrt(16*length(type_markers(sceAPCs))/9)), assay = "exprs")+
+    geom_point(size = min(3, 5000/ncol(sceAPCs)))
+```
+
+
+```{r pheno APCs, message=FALSE}
+set.seed(1234)
+phenoresults <- Rphenograph(t(assay(filterSCE(sceAPCs, marker_class == "type"), "exprs")), k = 15)
+
+colData(sceAPCs)$pheno <- as.factor(membership(phenoresults[[2]]))
+sceAPCs$cluster_id <- as.factor(membership(phenoresults[[2]]))
+metadata(sceAPCs)$cluster_codes <- data.frame(
+    custom = factor(levels(as.factor(membership(phenoresults[[2]]))), levels = levels(as.factor(membership(phenoresults[[2]])))))
+
+pdf(paste0(path.out, "07_batch2_secondary_APCs_phenograph.pdf"), height = 9, width = 16, onefile = TRUE)
+
+plotDR(sceAPCs, "UMAP", color_by = "pheno")+
+    scale_color_manual(values = unname(cols25()))+
+    geom_point(size = min(3, 5000/ncol(sceAPCs)))
+
+plotDR(sceAPCs, "UMAP", color_by = type_markers(sceAPCs), ncol = round(sqrt(16*length(type_markers(sceAPCs))/9)), assay = "exprs")+
+    geom_point(size = min(3, 5000/ncol(sceAPCs)))
+
+plotExprHeatmap(sceAPCs, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+dev.off()
+```
+
+
+## merging secondary APC clusters
+```{r merge clusters APCs, fig.height=9, fig.width=16}
+(merging_table1 <- read_excel(paste0(path.files, "merged_clusters_APCs_DC.xlsx"))) #This merging table combines alls cDC subsets to cDCs
+#(merging_table1 <- read_excel(paste0(path.files, "merged_clusters_APCs.xlsx"))) #This merging table keeps all cDC subsets separate
+
+sceAPCs <- mergeClusters(sceAPCs, k = "custom", table = merging_table1, id = "merging1")
+
+
+pdf(paste0(path.out, "08_batch2_secondary_APCs_merged.pdf"), height = 9, width = 16, onefile = TRUE)
+
+plotDR(sceAPCs, "UMAP", color_by = "merging1", assay = "exprs") + 
+    labs(title = "IMC APCs Secondary Clustering", col = "Cell type") + 
+    theme(plot.title = element_text(hjust = 0.5))+ 
+    scale_color_manual(values = colvec_ct[5:7])+
+    geom_point(size = min(3, 5000/ncol(sceAPCs)))
+
+plotDR(sceAPCs, "UMAP", color_by = type_markers(sceAPCs), ncol = round(sqrt(16*length(type_markers(sceAPCs))/9)), assay = "exprs")
+dev.off()
+
+code <- cluster_codes(sceAPCs)[,c("custom", "merging1")]
+coldata <- as.data.frame(colData(sceAPCs))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "custom")
+colData(sceAPCs) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+```
+
+# merging subclusters into main SCE
+```{r merge subclusters}
+tcell_cluster_id <- as.data.frame(colData(sceTcells)[,c("cellID", "merging1")])
+apc_cluster_id <- as.data.frame(colData(sceAPCs)[,c("cellID", "merging1")])
+subcluster_id <- rbind(tcell_cluster_id, apc_cluster_id)
+colnames(subcluster_id) <- c("cellID", "subclusters")
+
+coldata <- data.frame(colData(sce)) %>% dplyr::select(- "meta21")
+me <- merge(coldata, subcluster_id, by = c("cellID"), all = TRUE) 
+me <- me[order(me$ImageNumber, me$CellNumber),]
+me$sample_id <- factor(me$sample_id, levels = paste(1:10))
+me$primary_clustering<- as.character(me$primary_clustering)
+me$subclusters <- as.character((me$subclusters))
+me[is.na(me$subclusters),"subclusters"] <- me[is.na(me$subclusters),"primary_clustering"]
+
+me$cluster_id <- factor(me$subclusters)
+colData(sce) <- DataFrame(me)
+
+metadata(sce)$cluster_codes <- data.frame(
+    custom = factor(levels(me$cluster_id), levels = levels(me$cluster_id)))
+
+raster_pdf(paste0(path.out, "09a_batch2_subclustered.pdf"), height = 10, width = 12, res = 200)
+plotDR(sce, "UMAP", color_by = "subclusters", assay = "exprs") + 
+  labs(title = "IMC Secondary Clustering", col = "Cell type")+
+  theme_cowplot() + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  scale_color_manual(values = colvec_ct)+
+  geom_point(size = min(3, 5000/ncol(sce)))
+dev.off()
+
+raster_pdf(paste0(path.out, "09b_batch2_subclustered.pdf"), height = 6, width = 12, res = 200)
+plotDR(sce, "UMAP", color_by = "subclusters", assay = "exprs", facet_by = "Timepoint") + 
+  labs(title = "IMC Secondary Clustering", col = "Cell type") + 
+  theme_cowplot()+
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank()) + 
+  scale_color_manual(values = colvec_ct) + 
+  geom_point(size = min(3, 5000/ncol(sce)))
+dev.off()
+```
+# Save SCE object
+```{r save SCE}
+saveRDS(sce,file = paste0(path.files, "sce_batch2_subclustered.rds"))
+```
+
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
+
+# Archive
+### flowSOM Tcells
+```{r secondary clustering Tcells, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE, include=FALSE}
+#Filter for cluster/cell type
+sceTcells <- sce[,colData(sce)$primary_clustering == "Tcells"] #This line replace filterSCE, which was buged somehow..
+metadata(sceTcells) <- list()
+coldata <- as.data.frame(colData(sceTcells))
+colData(sceTcells) <- DataFrame(dplyr::select(coldata, - c("meta21")))
+
+#load marker_classes for secondary clustering
+secondary <- read_excel(paste0(path, "marker_classes_secondary_Tcells.xlsx"))
+rowdata <- as.data.frame(rowData(sceTcells))
+rowdata <- rowdata %>% dplyr::select(- c("marker_class", "used_for_clustering")) #replace primary marker classes with secondary
+rowdata <- merge(rowdata, secondary, by = "Target")
+rowData(sceTcells) <- DataFrame(rowdata[order(rowdata$channel),])
+type_markers(sceTcells)
+ksec <- 14
+set.seed(1234)
+sceTcells <- cluster(sceTcells, features = type_markers(sceTcells),
+    xdim = 10, ydim = 10, maxK = ksec, seed = 1234)
+set.seed(1234)
+sceTcells <- runDR(sceTcells, dr = "UMAP", features = "type")
+#pdf("~/Desktop/secondary_clustering_Tcells_flowSOM.pdf", height = 9, width = 16, onefile = TRUE)
+clustree(cluster_codes(sceTcells), prefix = "meta")
+plotExprHeatmap(sceTcells, features = "type",
+    by = "cluster_id", k = paste0("meta", ksec),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+plotClusterExprs(sceTcells, k = paste0("meta", ksec), features = "type")
+plotDR(sceTcells, "UMAP", color_by = paste0("meta", ksec)) + geom_point(size = 2)#or a cluster, apparently -> names(cluster_codes(sce))
+plotDR(sceTcells, "UMAP", color_by = type_markers(sceTcells), ncol = round(sqrt(16*length(type_markers(sceTcells))/9)), assay = "exprs")
+#dev.off()
+
+# (merging_table1 <- read_excel(paste0(path, "cpout_3pix2/merged_clusters_Tcells.xlsx")))
+# sceTcells <- mergeClusters(sceTcells, k = "meta14", table = merging_table1, id = "merging1")
+# plotDR(sceTcells, "UMAP", color_by = "merging1") + geom_point(size = 2)
+#
+# code <- cluster_codes(sceTcells)[,c("som100", paste0("meta", ksec), "merging1")]
+# #code <- cluster_codes(sceTcells)[,c("som100", paste0("meta", ksec))]
+# #colnames(code) <- c("som100", "merging1") #just testing, remove
+# coldata <- as.data.frame(colData(sceTcells))
+# coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+# colData(sceTcells) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+# #colData(sceTcells)
+# table(colData(sceTcells)[,c("merging1", "Timepoint")])
+```
+
+
+
+# Archive
+
+### flowSOM APCs
+```{r secondary clustering APCs, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE}
+#Filter for cluster/cell type
+sceAPCs <- sce[,colData(sce)$primary_clustering == "APCs"]
+metadata(sceAPCs) <- list()
+coldata <- as.data.frame(colData(sceAPCs))
+colData(sceAPCs) <- DataFrame(coldata)
+
+#load marker_classes for secondary clustering
+secondary <- read_excel(paste0(path, "marker_classes_secondary_APCs.xlsx"))
+rowdata <- as.data.frame(rowData(sceAPCs))
+rowdata <- rowdata %>% dplyr::select(- c("marker_class", "used_for_clustering")) #replace primary marker classes with secondary
+rowdata <- merge(rowdata, secondary, by = "Target")
+rowData(sceAPCs) <- DataFrame(rowdata[order(rowdata$channel),])
+type_markers(sceAPCs) #markers used for clustering
+state_markers(sceAPCs) #markers not used for clustering
+
+#secondary clustering
+ksec <- 15
+set.seed(1234)
+sceAPCs <- cluster(sceAPCs, features = type_markers(sceAPCs),
+    xdim = 10, ydim = 10, maxK = ksec, seed = 1234)
+
+clustree(cluster_codes(sceAPCs), prefix = "meta")
+
+#use this to create the merging_table to merge clusters
+#pdf("~/Desktop/cluster_sec_APCs2.pdf", height = 9, width = 16, onefile = TRUE)
+plotExprHeatmap(sceAPCs, features = "type",
+    by = "cluster_id", k = paste0("meta", ksec),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+plotClusterExprs(sceAPCs, k = paste0("meta", ksec), features = "type") #+ labs(title = "secondary clustering marker expression histogram")
+
+set.seed(1234)
+sceAPCs <- runDR(sceAPCs, dr = "UMAP", features = "type")
+
+plotDR(sceAPCs, "UMAP", color_by = paste0("meta", ksec)) + geom_point(size = 2)#or a cluster, apparently -> names(cluster_codes(sce))
+## Facet per condition
+#plotDR(sceAPCs, "UMAP", color_by = paste0("meta", ksec)) + facet_wrap("Timepoint") +
+#    guides(color = guide_legend(ncol = 2, override.aes = list(size = 3))) + geom_point(size = 2)
+
+plotDR(sceAPCs, "UMAP", color_by = type_markers(sceAPCs), ncol = round(sqrt(16*length(type_markers(sceAPCs))/9)), assay = "exprs")
+#plotDR(sceAPCs, "UMAP", color_by = state_markers(sceAPCs), ncol = round(sqrt(16*length(state_markers(sceAPCs))/9)), assay = "exprs")
+```
+
+
+```{r secondary merging APCs, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE}
+merging_table1 <- read_excel(paste0(path, "merged_clusters_APCs_temp.xlsx"))
+sceAPCs <- mergeClusters(sceAPCs, k = "meta14", table = merging_table1, id = "merging1")
+plotDR(sceAPCs, "UMAP", color_by = "merging1", assay = "exprs") + facet_wrap("Timepoint") + geom_point(size = 2)
+#dev.off()
+
+code <- cluster_codes(sceAPCs)[,c("som100", paste0("meta", ksec), "merging1")]
+coldata <- as.data.frame(colData(sceAPCs))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sceAPCs) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+colData(sceAPCs)
+
+table(colData(sceAPCs)[,c("merging1", "Timepoint")])
+```
+
+
+
+```{r merge sub archive, eval=FALSE, include=FALSE}
+# tcell_cluster_id <- as.data.frame(colData(sceTcells)[,c("cellID", "merging1")])
+# apc_cluster_id <- as.data.frame(colData(sceAPCs)[,c("cellID", "merging1")])
+# subcluster_id <- rbind(tcell_cluster_id, apc_cluster_id)
+# colnames(subcluster_id) <- c("cellID", "subclusters")
+# #table(duplicated(subcluster_id$cellID)) #make sure all cell IDs are unique
+# 
+# coldata <- as.data.frame(colData(sce)) %>% dplyr::select(-meta20)
+# me <- merge(coldata, subcluster_id, by = c("cellID"), all = TRUE) 
+# me <- me[order(me$ImageNumber, me$CellNumber),]
+# #coldata[coldata$cellID %in% tcell_cluster_id$cellID,"subsclusters"] <- tcell_cluster_id$merging1
+# 
+# me$primary_clustering<- as.character(me$primary_clustering)
+# me$subclusters <- as.character((me$subclusters))
+# me
+# me[is.na(me$subclusters),"subclusters"] <- me[is.na(me$subclusters),"primary_clustering"]
+# colData(sce) <- DataFrame(me)
+# table(colData(sce)$subclusters)
+# saveRDS(sce,file = "../../C - IICT SLE IL-2/I - Imaging mass cytometry/SCEobjects/sce_2_3pix2_subclustered.rds")
+# table(colData(sce)[,c("subclusters", "Timepoint")])
+```

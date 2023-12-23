@@ -1,0 +1,1156 @@
+---
+title: "02_scRNAseq_Downstream_Jan"
+author: "docaspar"
+date: "11/1/2021"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(scRepertoire)
+library(tidyverse)
+library(patchwork)
+library(umap)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(rstudioapi)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(flowCore)
+library(Rphenograph)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(readxl)
+library(MetBrewer)
+library(ggrepel)
+library(MatrixGenerics)
+library(msigdbr)
+library(fgsea)
+library(ggpubr)
+# library(xlsx)
+library(writexl)
+library(readr)
+library(clustree)
+library(VennDiagram)
+library(zeallot)
+library(rstatix)
+library(GSVA)
+library(fmsb)
+library(rasterpdf)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/Treg/"
+
+tregs <- readRDS(file = paste0(path.files, "Tregs_subclustered.rds"))
+
+colvec <- met.brewer("Monet",n=20)[c(12,10)]
+
+#load functions
+source("scRNA_functions.R")
+```
+
+
+# Check data
+```{r}
+#clusterplusfeature(tregs, cluster_column = "Treg_phenotpe", dim = "umap")
+raster_pdf(paste0(path.out, "000_Treg_vis.pdf"), height = 9, width = 16, res = 200)
+clusterplusfeature(tregs, protein.features = c("HLA-DRA-Protein", "CD38-Protein", "IL2RA-Protein"), cluster_column = "Treg_phenotpe", dim = "wnnadt.umap")
+plot_DR(tregs, color_by = "Treg_phenotpe", split_by = "timepoint", hml = FALSE, dim = "wnnadt.umap", cll = FALSE)
+plot_density(tregs, dim = "wnnadt.umap", color_by = "timepoint", bins = 10, xlim = c(-6, 7.5))
+plot_density(tregs, dim = "wnnadt.umap", color_by = "timepoint", bins = 15, xlim = c(-6, 7.5))
+dev.off()
+```
+
+```{r}
+pdf(paste0(path.out, "000_uhrf1_dnmt1_ezh2_expression.pdf"), height = 25, width = 50, onefile = TRUE)
+plot_features3(tregs, rna.features = c("UHRF1-RNA", "DNMT1-RNA", "EZH2-RNA"), group_by = "Treg_phenotpe", split_by = "timepoint", write.excel = TRUE, excel.path = paste0(path.out, "000_uhrf1_dnmt1_ezh2_expression.xlsx"))
+dev.off()
+```
+
+
+
+
+# Subluster Identification
+## CDM and Heatmap
+Finding cluster identifying markers and producing heatmaps from them.
+```{r tregs subclustering, fig.height=5, fig.width=8}
+#Find cluster-identifying protein and RNA markers
+protein.markers <- FindAllMarkers(object = tregs, assay = "Protein", test.use = "wilcox") %>% .[.$p_val_adj < 0.05,]
+write.xlsx(protein.markers, paste0(path.out, "09_Treg_cluster_identifying_protein_markers.xlsx"))
+
+rna.markers <- FindAllMarkers(object = tregs, assay = "RNA", test.use = "wilcox") %>% .[.$p_val_adj < 10e-5,]
+write.xlsx(rna.markers, paste0(path.out, "10_Treg_cluster_identifying_rna_markers.xlsx"))
+
+genes <- rna.markers$gene[!(grepl("^RPS[[:digit:]]+", rna.markers$gene) | grepl("^RPL[[:digit:]]+", rna.markers$gene))] %>% unique() #remove ribosomal protein mrnas
+genes <- genes[tregs@assays$RNA[genes,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+proteins <- protein.markers$gene %>% unique()
+proteins <- proteins[tregs@assays$Protein[proteins,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+#Idents(tregs) <- "pheno"
+tregs <- ScaleData(tregs, assay = "RNA")
+tregs <- ScaleData(tregs, assay = "Protein")
+#tregs <- FindVariableFeatures(tregs, assay = "Protein")
+
+pdf(paste0(path.out, "11a_Treg_subclusters_heatmaps.pdf"), height = 25, width = 50, onefile = TRUE)
+DoHeatmap(tregs, features = genes, assay = "RNA", raster = FALSE)
+DoHeatmap(tregs, features = proteins, assay = "Protein", raster = FALSE)
+dev.off()
+```
+
+## Dotplots
+Create DotPlots with selected genes and proteins.
+```{r tregs subclustering, fig.height=5, fig.width=8}
+tregs@meta.data$Treg_phenotpe <- factor(tregs@meta.data$Treg_phenotpe, levels = c("HLA-DR+ Tregs", "CD38+ Tregs", "CD38+ HLA-DR+ Tregs", "resting Tregs", "naive Tregs"))
+pdf(paste0(path.out, "11d_Treg_subclusters_DotPlots1_onescale.pdf"), height = 5, width = 8, onefile = TRUE)
+#Treg suppression
+
+
+DotPlot(object = tregs, assay = "Protein", 
+        # features = c("CTLA4-Protein", "TIGIT-Protein", "LAG3-Protein", "CD274-Protein", "ENTPD1-Protein", "NT5E-Protein"), group.by = "Treg_phenotpe")+ 
+        features = c("CTLA4-Protein", "TIGIT-Protein", "LAG3-Protein", "CD274-Protein", "ENTPD1-Protein"), group.by = "Treg_phenotpe")+ 
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title = element_blank())+
+  scale_color_gradientn(colors = inferno(9), lim = c(-2,2))+
+  lims(size = c(0,100))
+dev.off()
+
+pdf(paste0(path.out, "11d_Treg_subclusters_DotPlots2_onescale.pdf"), height = 5, width = 6, onefile = TRUE)
+DotPlot(object = tregs, assay = "RNA", 
+        features = c("LGALS9-RNA", "TGFB1-RNA", "TNFSF10-RNA"), group.by = "Treg_phenotpe")+ 
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title = element_blank())+
+  scale_color_gradientn(colors = inferno(9), lim = c(-2,2))+
+  lims(size = c(0,100))
+dev.off()
+
+pdf(paste0(path.out, "11d_Treg_subclusters_DotPlots3_onescale.pdf"), height = 5, width = 8, onefile = TRUE)
+#Treg migration
+DotPlot(object = tregs, assay = "Protein", 
+        features = c("ITGB1-Protein", "ITGB7-Protein", "ITGA4-Protein", "ITGA6-Protein", "SELL-Protein"), group.by = "Treg_phenotpe")+ 
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title = element_blank())+
+  scale_color_gradientn(colors = inferno(9), lim = c(-2,2))+
+  lims(size = c(0,100))
+dev.off()
+
+pdf(paste0(path.out, "11d_Treg_subclusters_DotPlots4_onescale.pdf"), height = 5, width = 6, onefile = TRUE)
+DotPlot(object = tregs, assay = "RNA", 
+        features = c("CCR9-RNA", "SELPLG-RNA"), group.by = "Treg_phenotpe")+ 
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title = element_blank())+
+  scale_color_gradientn(colors = inferno(9), lim = c(-2,2))+
+  lims(size = c(0,100))
+dev.off()
+
+# DotPlot(object = tregs, assay = "RNA", 
+#         features = c("RHOA-RNA", "PYCARD-RNA", "ITGA4-RNA", "SPN-RNA", "RAC1-RNA", "RAC2-RNA", "RHOG-RNA", "LGALS9-RNA", "IL27RA-RNA", "TNFRSF14-RNA", "CCR9-RNA", "CCR6-RNA", "CCR10-RNA"))+ 
+#   theme(axis.text.x = element_text(angle = 90),
+#         axis.title = element_blank())+
+#   scale_color_gradientn(colors = inferno(9))
+```
+
+## CDM and Heatmap activated cluster
+Cluster Defining Markers of activated clusters
+```{r tregs subclustering, fig.height=9, fig.width=16}
+activated <- tregs[,!tregs$Treg_phenotpe %in% c("naive Tregs", "resting Tregs")]
+
+protein.markers <- FindAllMarkers(object = activated, assay = "Protein", test.use = "wilcox")
+write.xlsx(protein.markers, paste0(path.out, "09b_Treg_cluster_identifying_protein_markers.xlsx"))
+
+rna.markers <- FindAllMarkers(object = activated, assay = "RNA", test.use = "wilcox")
+write.xlsx(rna.markers, paste0(path.out, "10b_Treg_cluster_identifying_rna_markers.xlsx"))
+
+proteins <- protein.markers %>% 
+  dplyr::filter(p_val_adj < 0.05) %>% 
+  dplyr::select(gene) %>% 
+  unique() %>% unlist()
+
+proteins <- proteins[tregs@assays$Protein[proteins,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+
+genes <- rna.markers %>% 
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::filter(!grepl("^RPS[[:digit:]]+|^RPL[[:digit:]]+", rownames(.))) %>% 
+  dplyr::select(gene) %>% 
+  unique() %>% unlist()
+
+genes <- genes[tregs@assays$RNA[genes,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+
+#pdf(paste0(path.out, "11b_Treg_subclusters_heatmaps.pdf"), height = 25, width = 25, onefile = TRUE)
+DoHeatmap(activated, features = genes, assay = "RNA", raster = FALSE)
+DoHeatmap(activated, features = proteins, assay = "Protein", raster = FALSE)
+#dev.off()
+```
+
+## Venn Diagram
+```{r, fig.height=25, fig.width=25, eval=FALSE}
+ls <- list()
+for(phenotype in tregs@meta.data$Treg_phenotpe %>% levels()){
+  ls[[phenotype]] <- tregs[,tregs@meta.data$Treg_phenotpe == phenotype]@assays$RNA %>% 
+    rowMeans() %>% 
+    as.data.frame() %>% 
+    dplyr::filter(`.` > 0.1) %>% 
+    rownames()
+}
+
+library(gplots)
+
+pdf(paste0(path.out, "11c_venn_diagrams.pdf"), height = 15, width = 15, onefile = TRUE)
+venn(ls)
+venn(ls[1:3])
+dev.off()
+
+#This histogram highlights the distribution of gene abundance.
+tregs@assays$RNA %>% rowMeans() %>% as.data.frame() %>% ggplot(aes(`.`)) +geom_histogram(bins = 100)+xlim(c(0, 0.3)) + ylim(c(0,2000))
+```
+
+
+# Subcluster DA
+Differential Abundance of Treg subclusters
+```{r tregs subclustering}
+tregs@meta.data <- tregs@meta.data %>% 
+  dplyr::mutate("copy" = Sample) %>%
+  separate(copy, c("patient_id", "timepoint"))
+
+df <- merge(tregs@meta.data[c("Treg_phenotpe", "Timepoint", "patient_id")] %>% table() %>% as.data.frame(), 
+            tregs@meta.data[c("Treg_phenotpe", "Timepoint")] %>% table() %>% colSums() %>% as.data.frame(), 
+            by.x = "Timepoint", by.y = 0)
+
+df <- df %>% mutate("freqoftreg" = Freq/`.`)
+df$Timepoint <- factor(df$Timepoint, levels = c("pre-treatment", "post-treatment"))
+
+pdf(paste0(path.out, "12_Treg_subcluster_abundance.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(df, aes(x = Timepoint, y = freqoftreg*100))+
+  geom_point(aes(col = Timepoint))+
+  geom_violin(aes(col = Timepoint, fill = Timepoint), alpha = 0.5)+
+  geom_line(aes(group = patient_id), col = "grey")+
+  facet_wrap("Treg_phenotpe", nrow = 1)+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  theme_minimal()+
+  stat_compare_means(comparisons = list(c("pre-treatment", "post-treatment")), paired = TRUE, method = "t.test", label = "p.value")+
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust = 0.5))+
+  labs(y = "Frequency of total Tregs (%)", title = "Frequency of total Tregs")+
+  scale_y_continuous(expand = c(0.05, 0.25))
+dev.off()
+```
+
+
+# Treg subcluster analysis
+## DGE by timepoint
+
+Here, we analyze each cluster for pre-post treatment differences. We do:
+- DE for genes
+- DE for proteins
+- DE plots for selected rna and protein markers
+- GSEA for GO immune terms
+- GSEA enrichment plots
+
+```{r tregs, fig.height=9, fig.width=16}
+#Import Gene Sets from the Molecular Signature Data Base (MSigDB)
+hallmarks<- msigdbr(species = "Homo sapiens", category = "H")
+go<- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP")
+
+immproc <- read_delim(paste0(path.files, "GO_term_summary_20220531_063040.txt"),
+    delim = "\t", escape_double = FALSE,
+    trim_ws = TRUE)
+immproc <- immproc$`Annotated Term` %>% toupper() %>% paste("GOBP", .) %>% str_replace_all(" ", "_")
+go <- go[go$gs_name %in% immproc,]
+kegg<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "KEGG")
+
+geneset <- hallmarks
+gs_name <- "Hallmarks"
+
+pf <- c("IL2RA-Protein", "IL7R-Protein", "ITGB7-Protein", "PDCD1-Protein", "CTLA4-Protein", "ICOS-Protein", "CXCR3-Protein", "CCR4-Protein", "CCR6-Protein")
+rf <- c("IL2RA-RNA", "FOXP3-RNA", "ITGA4-RNA", "ITGB7-RNA", "SELPLG-RNA", "TGFB1-RNA", "IL10-RNA", "ZBTB20-RNA", "EBI3-RNA", "IDO1-RNA", "GZMB-RNA", "AREG-RNA", "ZNF683-RNA", "CCR4-RNA", "CCR8-RNA", "CXCR3-RNA", "TOX-RNA", "CXCR4-RNA", "CCR1-RNA", "CCR5-RNA", "CCR6-RNA", "TCF7-RNA", "CCR7-RNA", "IKZF2-RNA", "IL2-RNA", "IL4-RNA", "IL6-RNA", "CXCL8-RNA", "IL15-RNA", "IL18-RNA", "IL21-RNA", "IL32-RNA", "ICOS-RNA", "TIGIT-RNA")
+rf[duplicated(rf)]
+
+gsealist <- list()
+dgelist <- list()
+dpelist <- list()
+for(subcluster in tregs@meta.data$Treg_phenotpe %>% levels()){
+  sbclstr <- tregs[,tregs@meta.data$Treg_phenotpe == subcluster]
+  
+  Pre_treatments <- rownames(sbclstr@meta.data[sbclstr@meta.data$Timepoint=="pre-treatment",])
+  Post_treatments <- rownames(sbclstr@meta.data[sbclstr@meta.data$Timepoint=="post-treatment",])
+  
+  #DGE for Tregs pre and post treatment; print all with log2FC > 0.25
+  Tregs.treatment.RNA.markers <- as.data.frame(FindMarkers(tregs, ident.1 = Post_treatments, ident.2 = Pre_treatments, assay = "RNA", logfc.threshold = 0, test.use = "wilcox"))
+  dgelist[[subcluster]] <- Tregs.treatment.RNA.markers
+  write.xlsx(Tregs.treatment.RNA.markers, paste0(path.out, "13a_", subcluster, "_by_V3vsV2_RNA.xlsx"))
+  
+  pdf(paste0(path.out, "13a_", subcluster, "_by_V3vsV2_VolcanoPLot.pdf"), height = 5, width = 8, onefile = TRUE)
+  plot_volcano(dgeres = Tregs.treatment.RNA.markers) %>% print()
+  dev.off()
+  
+  #Differential protein expression for Tregs pre and post treatment; print all with log2FC > 0.25
+  Tregs.treatment.Protein.markers <- as.data.frame(FindMarkers(tregs, ident.1 = Post_treatments, ident.2 = Pre_treatments, assay = "Protein", logfc.threshold = 0, test.use = "wilcox"))
+  dpelist[[subcluster]] <- Tregs.treatment.Protein.markers
+
+  write.xlsx(Tregs.treatment.Protein.markers, 
+             paste0(path.out, "13b_", subcluster, "_by_V3vsV2_Protein.xlsx"))
+  
+  # #Violin plot
+  # pdf(paste0(path.out, "13c_", subcluster, "_by_V3vsV2_violin_plot_DGE.pdf"), height = 9, width = 16, onefile = TRUE)
+  # plot_pbfeatures(sbclstr, pf, rf)
+  # plot_features(sbclstr, pf, rf, protein.stats = Tregs.treatment.Protein.markers, rna.stats = Tregs.treatment.RNA.markers, evencells = TRUE)
+  # fractions(sbclstr, pf, rf)
+  # dev.off()
+  
+  #GSEA
+  fgsea_res <- run_fgsea(Tregs.treatment.RNA.markers, gene_set = hallmarks, suffix = "-RNA", sampleSize = 1000)
+  write.xlsx(fgsea_res, paste0(path.out, "13d_", subcluster, "_by_V3vsV2_", gs_name, "_GSEA.xlsx"))
+  gsealist[[subcluster]] <- fgsea_res
+  
+  pdf(paste0(path.out, "13e_", subcluster, "_by_V3vsV2_", gs_name, "_EnrichmentPlots.pdf"), height = 5, width = 8, onefile = TRUE)
+  gsea_barplot(fgsea_res = fgsea_res, top_n = 5, p_max = NULL) %>% print()
+  dev.off()
+  
+  pdf(paste0(path.out, "13f_", subcluster, "_by_V3vsV2_", gs_name, "_EnrichmentPlots.pdf"), height = 5, width = 8, onefile = TRUE)
+  plot_fgsea(Tregs.treatment.RNA.markers, gene_set = hallmarks, suffix = "-RNA", sampleSize = 1000, top_n = 5) %>% print()
+  dev.off()
+}
+
+gsealist2 <- lapply(gsealist[1:3], function(x) x[x$pathway %in% c("HALLMARK_MTORC1_SIGNALING", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_GLYCOLYSIS"),])
+gsealist2 <- lapply(gsealist2, function(x) select(x, c("pathway", "ES")))
+gsealist2 <- lapply(gsealist2, function(x) arrange(x, pathway))
+#df <- cbind(gsealist2$`HLA-DR+ Tregs`, gsealist2$`CD38+ Tregs`, gsealist2$`CD38+ HLA-DR+ Tregs`, gsealist2$`resting Tregs`, gsealist2$`naive Tregs`)
+df <- cbind(gsealist2$`HLA-DR+ Tregs`, gsealist2$`CD38+ Tregs`, gsealist2$`CD38+ HLA-DR+ Tregs`)
+df <- df[c(1,2,4,6)]
+#df <- df[c(1,2,4,6,8,10)]
+df <- df %>% column_to_rownames("pathway")
+colnames(df) <- names(gsealist2)
+
+data <- df %>% t() %>% as.data.frame()
+
+data <- rbind(rep(max(data), 5), rep(min(data), 5), data)
+
+# Color vector
+colors_border=c( rgb(0.2,0.5,0.5,0.9), rgb(0.8,0.2,0.5,0.9) , rgb(0.7,0.5,0.1,0.9))
+colors_in=c( rgb(0.2,0.5,0.5,0.4), rgb(0.8,0.2,0.5,0.4) , rgb(0.7,0.5,0.1,0.4))
+# colors_border=c( rgb(0.2,0.5,0.5,0.9), rgb(0.8,0.2,0.5,0.9) , rgb(0.7,0.5,0.1,0.9), rgb(0.4,0.5,0.2,0.9), rgb(0.1,0.5,0.8,0.9))
+# colors_in=c( rgb(0.2,0.5,0.5,0.4), rgb(0.8,0.2,0.5,0.4) , rgb(0.7,0.5,0.1,0.4), rgb(0.4,0.5,0.2,0.4), rgb(0.1,0.5,0.8,0.4))
+
+# plot with default options:
+pdf(paste0(path.out, "13g_Treg_DGE_V3vsV2_SpiderPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+radarchart( data  , axistype=1 , 
+    #custom polygon
+    pcol=colors_border , pfcol=colors_in , plwd=4 , plty=1,
+    #custom the grid
+    cglcol="grey", cglty=1, axislabcol="grey", caxislabels=signif(seq(min(data),max(data), length.out = 5),2), cglwd=0.8,
+    #custom labels
+    vlcex=1 
+    )
+
+# Add a legend
+legend(x=0.7, y=1, legend = rownames(data[-c(1,2),]), bty = "n", pch=20 , col=colors_border , text.col = "black", cex=1.2, pt.cex=3)
+dev.off()
+```
+
+
+## DGE of Treg subclusters
+Here, we do pairwise Differential Gene and Protein Expression (DGE & DPE) between Treg subclusters.
+```{r tregs subclustering}
+#######Comparing CD38 to HLADR activated clusters#####
+## get cell_ids for activated clusters
+hladr <- rownames(tregs@meta.data[tregs@meta.data$Treg_phenotpe=="HLA-DR+ Tregs",])
+cd38hladr <- rownames(tregs@meta.data[tregs@meta.data$Treg_phenotpe=="CD38+ HLA-DR+ Tregs",])
+cd38 <- rownames(tregs@meta.data[tregs@meta.data$Treg_phenotpe=="CD38+ Tregs",])
+
+
+## DGE for clusters 2 & 3 (hladr & cd38 activated clusters)
+#cd38+hladr+ / hladr+
+dgeres1 <- tregs %>% FindMarkers(ident.1 = cd38hladr, ident.2 = hladr, assay = "RNA", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dgeres1, paste0(path.out, "14a_Treg_cd38hladr_vs_hladr_RNA.xlsx"))
+
+dperes1 <- tregs %>% FindMarkers(ident.1 = cd38hladr, ident.2 = hladr, assay = "Protein", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dperes1, paste0(path.out, "14b_Treg_cd38hladr_vs_hladr_Protein.xlsx"))
+
+### This needs revision
+# pdf(paste0(path.out, "14c_cd38hladr_vs_hladr_violin_feature_plots.pdf"), height = 9, width = 16, onefile = TRUE)
+# plot_pbfeatures(x = tregs, pf = pf, rf = rf, group.by = "Treg_phenotpe", bulk.by = "patient_id", paired = FALSE)
+#plot_features(sbclstr, pf, rf, protein.stats = Tregs.treatment.Protein.markers, rna.stats = Tregs.treatment.RNA.markers, evencells = TRUE)
+# fractions(sbclstr, pf, rf)
+# dev.off()
+
+toplot <- dgeres1 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05,"gene"] <- NA
+
+pdf(paste0(path.out, "14d_cd38hladr_vs_hladr_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+
+#cd38+hladr+ / cd38+
+dgeres2 <- tregs %>% FindMarkers(ident.1 = cd38hladr, ident.2 = cd38, assay = "RNA", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dgeres2, paste0(path.out, "14e_Treg_cd38hladr_vs_cd38_RNA.xlsx"))
+
+dperes2 <- tregs %>% FindMarkers(ident.1 = cd38hladr, ident.2 = cd38, assay = "Protein", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dperes2, paste0(path.out, "14f_Treg_cd38hladr_vs_cd38_Protein.xlsx"))
+
+toplot <- dgeres2 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05, "gene"] <- NA
+
+pdf(paste0(path.out, "14g_cd38hladr_vs_cd38_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+
+#hladr+ / cd38+
+dgeres3 <- tregs %>% FindMarkers(ident.1 = hladr, ident.2 = cd38, assay = "RNA", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dgeres3, paste0(path.out, "14h_Treg_hladr_vs_cd38_RNA.xlsx"))
+
+dperes3 <- tregs %>% FindMarkers(ident.1 = hladr, ident.2 = cd38, assay = "Protein", logfc.threshold = 0, test.use = "wilcox") %>% na.omit()
+write.xlsx(dperes3, paste0(path.out, "14i_Treg_hladr_vs_cd38_Protein.xlsx"))
+
+toplot <- dgeres3 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05,"gene"] <- NA
+
+pdf(paste0(path.out, "14j_hladr_vs_cd38_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+```
+
+
+## DoHeatmap on pairwise DGE & DPE
+Here, we select the 30 most significant genes and proteins for each pairwise differential analysis to visualize them on a heatmap.
+```{r tregs subclustering, fig.height=10, fig.width=12}
+###RNAs
+#Find cluster-identifying protein and RNA markers
+genes <- rbind(dgeres1[!(grepl("^RPS[[:digit:]]+", rownames(dgeres1)) | grepl("^RPL[[:digit:]]+", rownames(dgeres1))),][1:50,], 
+               rbind(dgeres2[!(grepl("^RPS[[:digit:]]+", rownames(dgeres2)) | grepl("^RPL[[:digit:]]+", rownames(dgeres2))),][1:50,], 
+                     dgeres3[!(grepl("^RPS[[:digit:]]+", rownames(dgeres3)) | grepl("^RPL[[:digit:]]+", rownames(dgeres3))),][1:50,])) %>% 
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "[[:digit:]]*$", "")) %>% #remove special characters from the end of gene names
+  arrange(p_val) %>%
+  .$marker %>%
+  unique()
+
+
+
+#remove ribosomal protein mrnas: had to include this in the initial gene filtering, since most genes at the top of the list are ribosomal mRNAs
+# genes <- genes$marker[!(grepl("^RPS[[:digit:]]+", genes$marker) | grepl("^RPL[[:digit:]]+", genes$marker))] %>% unique() 
+
+#order genes by hierarchical clustering
+genes <- genes[tregs@assays$RNA[genes,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+###Proteins
+prots <- rbind(dperes1[1:20,], rbind(dperes2[1:20,], dperes3[1:20,])) %>% 
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "(Protein)[[:digit:]]*$", "\\1")) %>% #remove special characters from the end of gene names
+  mutate("marker" = str_replace_all(marker, "(Protein.[[:digit:]]{1})[[:digit:]]{1}$", "\\1")) %>% #remove special characters from the end of gene names
+  arrange(p_val) %>% 
+  .[,"marker"] %>%
+  unique()
+
+# prots <- c(prots, "ITGB7−Protein")
+
+#order prots by hierarchical clustering
+prots <- prots[tregs@assays$Protein[prots,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+#The data needs to be scaled prior to creating heatmaps. If the data is not yet scaled, uncomment these two lines.
+# tregs <- ScaleData(tregs, assay = "RNA")
+# tregs <- ScaleData(tregs, assay = "Protein")
+
+activated <- tregs[,!tregs$Treg_phenotpe %in% c("naive Tregs", "resting Tregs")]
+
+#pdf(paste0(path.out, "14k_Treg_subclusters_heatmaps17.pdf"), height = 10, width = 12, onefile = TRUE)
+DoHeatmap(activated, features = genes, assay = "RNA", raster = FALSE)
+DoHeatmap(activated, features = prots, assay = "Protein", raster = FALSE)
+#dev.off()
+```
+
+Here, we plot the overall most significant genes on a heatmap.
+```{r tregs subclustering, fig.height=10, fig.width=12}
+###RNAs
+#Find cluster-identifying protein and RNA markers
+genes  <- rbind(dgeres1, rbind(dgeres2, dgeres3)) %>% 
+  dplyr::filter(!grepl("^RPS[[:digit:]]+|^RPL[[:digit:]]+", rownames(.))) %>% 
+  dplyr::filter(p_val_adj < 0.05) %>%
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "[[:digit:]]*$", "")) %>% #remove special characters from the end of gene names
+  .$marker %>%
+  unique()
+
+#remove ribosomal protein mrnas: had to include this in the initial gene filtering, since most genes at the top of the list are ribosomal mRNAs
+# genes <- genes$marker[!(grepl("^RPS[[:digit:]]+", genes$marker) | grepl("^RPL[[:digit:]]+", genes$marker))] %>% unique() 
+
+#order genes by hierarchical clustering
+genes <- genes[tregs@assays$RNA[genes,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+###Proteins
+prots <- rbind(dperes1, rbind(dperes2, dperes3)) %>% 
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "(Protein)[[:digit:]]*$", "\\1")) %>% #remove special characters from the end of gene names
+  mutate("marker" = str_replace_all(marker, "(Protein.[[:digit:]]{1})[[:digit:]]{1}$", "\\1")) %>% #remove special characters from the end of gene names
+  arrange(p_val) %>% 
+  dplyr::filter(p_val_adj < 0.05) %>%
+  .$marker %>%
+  unique()
+
+# prots <- c(prots, "ITGB7−Protein")
+
+#order prots by hierarchical clustering
+prots <- prots[tregs@assays$Protein[prots,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+#The data needs to be scaled prior to creating heatmaps. If the data is not yet scaled, uncomment these two lines.
+# tregs <- ScaleData(tregs, assay = "RNA")
+# tregs <- ScaleData(tregs, assay = "Protein")
+
+activated <- tregs[,!tregs$Treg_phenotpe %in% c("naive Tregs", "resting Tregs")]
+
+#pdf(paste0(path.out, "14k_Treg_subclusters_heatmaps_signif.pdf"), height = 10, width = 12, onefile = TRUE)
+DoHeatmap(activated, features = genes, assay = "RNA", raster = FALSE)
+DoHeatmap(activated, features = prots, assay = "Protein", raster = FALSE)
+#dev.off()
+```
+
+## Feature_boxplots
+### Split by timepoint
+#### Proteins
+```{r, fig.height=9, fig.width=16}
+pf <- c("IL2RA-Protein", "PDCD1-Protein", "CTLA4-Protein", "ICOS-Protein", "TIGIT-Protein", "LAG3-Protein", "CD27-Protein", "CD132-Protein", "IL2RB-Protein", "CD28-Protein")
+
+integrins <- rownames(tregs@assays$Protein)[grepl("ITGA|ITGB", rownames(tregs@assays$Protein))]
+ckr <- rownames(tregs@assays$Protein)[grepl("CCR|CXCR", rownames(tregs@assays$Protein))]
+selectins <- rownames(tregs@assays$Protein)[grepl("^SEL", rownames(tregs@assays$Protein)) & !grepl("SELEN|SEL[[:digit:]]", rownames(tregs@assays$Protein))]
+cytokines <- rownames(tregs@assays$Protein)[grepl("^IL[[:digit:]]{1,2}-|^IFN[[:alpha:]]{1}[[:digit:]]{0,2}-|TNF-RNA|TGFB1-RNA", rownames(tregs@assays$Protein))& !grepl("-AS", rownames(tregs@assays$RNA))]
+chemokines <- rownames(tregs@assays$Protein)[grepl("^CXCL", rownames(tregs@assays$Protein))]
+TregActGenes <- c("CTLA4", "LAG3", "CD274", "ENTPD1", "NT5E", "IL2RA", "ICOS", "TIGIT")
+
+d1 <- dperes1[rownames(dperes1) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d2 <- dperes2[rownames(dperes2) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d3 <- dperes3[rownames(dperes3) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+
+mixed <- c(d1$key, d2$key, d3$key) %>% unique()
+
+ds1 <- dge2ggpubr(dpelist$`HLA-DR+ Tregs`, group1 = "V2", group2 = "V3", group_by = "HLA-DR+ Tregs")
+ds2 <- dge2ggpubr(dpelist$`CD38+ Tregs`, group1 = "V2", group2 = "V3", group_by = "CD38+ Tregs")
+ds3 <- dge2ggpubr(dpelist$`CD38+ HLA-DR+ Tregs`, group1 = "V2", group2 = "V3", group_by = "CD38+ HLA-DR+ Tregs")
+ds4 <- dge2ggpubr(dpelist$`resting Tregs`, group1 = "V2", group2 = "V3", group_by = "resting Tregs")
+ds5 <- dge2ggpubr(dpelist$`naive Tregs`, group1 = "V2", group2 = "V3", group_by = "naive Tregs")
+dpesplit <- rbind(ds1, ds2, ds3, ds4, ds5)
+
+ls <- list(integrins, ckr, selectins, cytokines, chemokines, mixed, prots[1:18], prots[19:37], pf, paste0(TregActGenes, "-Protein"))
+names(ls) <- c("integrins", "ckr", "selectins", "cytokines", "chemokines", "mixed", "prots1", "prots2", "pf", "TregActGenes")
+
+pdf(paste0(path.out, "Z_feature_boxplots_Protein_split.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- plot_features3(x = tregs, 
+                       protein.features = ls[g] %>% unlist(), 
+                       group_by = "Treg_phenotpe", 
+                       split_by = "timepoint", 
+                       evencells = FALSE, 
+                       comparisons = dpesplit, 
+                       write.excel = FALSE, excel.path = paste0(path.out, "Z ", g," Protein.xlsx"))
+  p1 %>% print()
+}
+dev.off()
+```
+
+Overall happy, the statistics may need a tweak. It seems less dramatic here than in the plot_features, since the noise of the negative cells is reduced.
+```{r, fig.height=9, fig.width=16}
+comparisons <- list(c("CD38+ Tregs", "HLA-DR+ Tregs"), c("CD38+ HLA-DR+ Tregs", "CD38+ Tregs"), c("CD38+ HLA-DR+ Tregs", "HLA-DR+ Tregs"))
+pdf(paste0(path.out, "Z_feature_fraction_boxplots_Protein_split.pdf"), height = 9, width = 16, onefile = TRUE)
+for(n in names(ls)){
+  print(n)
+  if(ls[n] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- fractions2(tregs, pf = ls[n] %>% unlist(), group_by = "Treg_phenotpe", bulk_by = "patient_id", split_by = "timepoint", comparisons = NULL, method = "ziwilcox.test")
+  p1 %>% print()
+}
+dev.off()
+
+```
+
+#### RNAs
+```{r, fig.height=9, fig.width=16}
+rf <- c("IL2RA-RNA", "FOXP3-RNA", "ZBTB20-RNA", "EBI3-RNA", "IDO1-RNA", "GZMB-RNA", "AREG-RNA", "ZNF683-RNA",  "TOX-RNA", "TCF7-RNA",  "IKZF2-RNA", "ICOS-RNA", "TIGIT-RNA", "CTLA4-RNA")
+
+integrins <- rownames(tregs@assays$RNA)[grepl("ITGA|ITGB", rownames(tregs@assays$RNA))]
+ckr <- rownames(tregs@assays$RNA)[grepl("CCR|CXCR", rownames(tregs@assays$RNA))]
+selectins <- rownames(tregs@assays$RNA)[grepl("^SEL", rownames(tregs@assays$RNA)) & !grepl("SELEN|SEL[[:digit:]]", rownames(tregs@assays$RNA))]
+cytokines <- rownames(tregs@assays$RNA)[grepl("^IL[[:digit:]]{1,2}-|^IFN[[:alpha:]]{1}[[:digit:]]{0,2}-|TNF-RNA|TGFB1-RNA", rownames(tregs@assays$RNA))& !grepl("-AS", rownames(tregs@assays$RNA))]
+chemokines <- rownames(tregs@assays$RNA)[grepl("^CXCL", rownames(tregs@assays$RNA))]
+granzymes <- rownames(tregs@assays$RNA)[grepl("^PRF|^GZM", rownames(tregs@assays$RNA))]
+TregActGenes <- c("IL10", "TGFB1", "LGALS9", "HAVCR2", "CTLA4", "LAG3", "CD274", "PDCD1LG2", "GZMA", "GZMB", "PRF1", "FASLG", "ENTPD1", "NT5E", "IL2RA", "ICOS", "ICOSLG", "IDO1", "TIGIT")
+
+d1 <- dgeres1[rownames(dgeres1) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d2 <- dgeres2[rownames(dgeres2) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d3 <- dgeres3[rownames(dgeres3) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+
+mixed <- c(d1$key, d2$key, d3$key) %>% unique()
+
+ds1 <- dge2ggpubr(dgelist$`HLA-DR+ Tregs`, group1 = "V2", group2 = "V3", group_by = "HLA-DR+ Tregs")
+ds2 <- dge2ggpubr(dgelist$`CD38+ Tregs`, group1 = "V2", group2 = "V3", group_by = "CD38+ Tregs")
+ds3 <- dge2ggpubr(dgelist$`CD38+ HLA-DR+ Tregs`, group1 = "V2", group2 = "V3", group_by = "CD38+ HLA-DR+ Tregs")
+ds4 <- dge2ggpubr(dgelist$`resting Tregs`, group1 = "V2", group2 = "V3", group_by = "resting Tregs")
+ds5 <- dge2ggpubr(dgelist$`naive Tregs`, group1 = "V2", group2 = "V3", group_by = "naive Tregs")
+dgesplit <- rbind(ds1, ds2, ds3, ds4, ds5)
+
+ls <- list(integrins, ckr, selectins, cytokines, chemokines, mixed, genes[1:29], genes[30:59], rf, granzymes, paste0(TregActGenes, "-RNA"))
+names(ls) <- c("integrins", "ckr", "selectins", "cytokines", "chemokines", "mixed", "genes1", "genes2", "rf", "granzymes", "TregActGenes")
+
+pdf(paste0(path.out, "Z_feature_boxplots_RNA_split.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- plot_features3(x = tregs, 
+                       rna.features = ls[g] %>% unlist(), 
+                       group_by = "Treg_phenotpe", 
+                       split_by = "timepoint",
+                       evencells = FALSE, 
+                       comparisons = dgesplit, 
+                       write.excel = FALSE)
+  p1 %>% print()
+
+}
+dev.off()
+```
+
+Overall happy, the statistics may need a tweak. It seems less dramatic here than in the plot_features, since the noise of the negative cells is reduced.
+```{r, fig.height=9, fig.width=16}
+comparisons <- list(c("CD38+ Tregs", "HLA-DR+ Tregs"), c("CD38+ HLA-DR+ Tregs", "CD38+ Tregs"), c("CD38+ HLA-DR+ Tregs", "HLA-DR+ Tregs"))
+
+pdf(paste0(path.out, "Z_feature_fraction_boxplots_split_RNA.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- fractions2(tregs, rf = ls[g] %>% unlist(), group_by = "Treg_phenotpe", bulk_by = "patient_id", split_by = "timepoint", comparisons = NULL, method = "ziwilcox.test")
+  p1 %>% print()
+  #write.xlsx(table1, paste0(path.out, "Z ", g," fraction.xlsx"))
+}
+dev.off()
+```
+
+### Compare subclusters
+#### Proteins
+```{r, fig.height=9, fig.width=16}
+pf <- c("IL2RA-Protein", "PDCD1-Protein", "CTLA4-Protein", "ICOS-Protein", "TIGIT-Protein", "LAG3-Protein", "CD27-Protein", "CD132-Protein", "IL2RB-Protein", "CD28-Protein")
+
+integrins <- rownames(tregs@assays$Protein)[grepl("ITGA|ITGB", rownames(tregs@assays$Protein))]
+ckr <- rownames(tregs@assays$Protein)[grepl("CCR|CXCR", rownames(tregs@assays$Protein))]
+selectins <- rownames(tregs@assays$Protein)[grepl("^SEL", rownames(tregs@assays$Protein)) & !grepl("SELEN|SEL[[:digit:]]", rownames(tregs@assays$Protein))]
+cytokines <- rownames(tregs@assays$Protein)[grepl("^IL[[:digit:]]{1,2}-|^IFN[[:alpha:]]{1}[[:digit:]]{0,2}-|TNF-RNA|TGFB1-RNA", rownames(tregs@assays$Protein))& !grepl("-AS", rownames(tregs@assays$RNA))]
+chemokines <- rownames(tregs@assays$Protein)[grepl("^CXCL", rownames(tregs@assays$Protein))]
+TregActGenes <- c("CTLA4", "LAG3", "CD274", "ENTPD1", "NT5E", "IL2RA", "ICOS", "TIGIT")
+
+d1 <- dperes1[rownames(dperes1) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d2 <- dperes2[rownames(dperes2) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d3 <- dperes3[rownames(dperes3) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+
+mixed <- c(d1$key, d2$key, d3$key) %>% unique()
+
+d1 <- dge2ggpubr(dperes1, group1 = "CD38+ HLA-DR+ Tregs", group2 = "HLA-DR+ Tregs")
+d2 <- dge2ggpubr(dperes2, "CD38+ HLA-DR+ Tregs", "CD38+ Tregs")
+d3 <- dge2ggpubr(dperes3, "CD38+ Tregs", "HLA-DR+ Tregs")
+dpe.combined <- rbind(d1,d2,d3)
+
+ls <- list(integrins, ckr, selectins, cytokines, chemokines, mixed, prots[1:18], prots[19:37], pf, paste0(TregActGenes, "-Protein"))
+names(ls) <- c("integrins", "ckr", "selectins", "cytokines", "chemokines", "mixed", "prots1", "prots2", "pf", "TregActGenes")
+
+pdf(paste0(path.out, "Z_feature_boxplots_Protein.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- plot_features3(x = tregs, 
+                       protein.features = ls[g] %>% unlist(), 
+                       group_by = "Treg_phenotpe", 
+                       split_by = NULL, 
+                       evencells = FALSE, 
+                       comparisons = dpe.combined, 
+                       write.excel = FALSE, excel.path = paste0(path.out, "Z ", g," Protein.xlsx"))
+  p1 %>% print()
+}
+dev.off()
+```
+
+Overall happy, the statistics may need a tweak. It seems less dramatic here than in the plot_features, since the noise of the negative cells is reduced.
+```{r, fig.height=9, fig.width=16}
+comparisons <- list(c("CD38+ Tregs", "HLA-DR+ Tregs"), c("CD38+ HLA-DR+ Tregs", "CD38+ Tregs"), c("CD38+ HLA-DR+ Tregs", "HLA-DR+ Tregs"))
+pdf(paste0(path.out, "Z_feature_fraction_boxplots_Protein.pdf"), height = 9, width = 16, onefile = TRUE)
+for(n in names(ls)){
+  print(n)
+  if(ls[n] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- fractions2(tregs, pf = ls[n] %>% unlist(), group_by = "Treg_phenotpe", bulk_by = "patient_id", split_by = NULL, comparisons = NULL, method = "ziwilcox.test")
+  p1 %>% print()
+}
+dev.off()
+
+```
+
+#### RNAs
+```{r, fig.height=9, fig.width=16}
+rf <- c("IL2RA-RNA", "FOXP3-RNA", "ZBTB20-RNA", "EBI3-RNA", "IDO1-RNA", "GZMB-RNA", "AREG-RNA", "ZNF683-RNA",  "TOX-RNA", "TCF7-RNA",  "IKZF2-RNA", "ICOS-RNA", "TIGIT-RNA", "CTLA4-RNA")
+
+integrins <- rownames(tregs@assays$RNA)[grepl("ITGA|ITGB", rownames(tregs@assays$RNA))]
+ckr <- rownames(tregs@assays$RNA)[grepl("CCR|CXCR", rownames(tregs@assays$RNA))]
+selectins <- rownames(tregs@assays$RNA)[grepl("^SEL", rownames(tregs@assays$RNA)) & !grepl("SELEN|SEL[[:digit:]]", rownames(tregs@assays$RNA))]
+cytokines <- rownames(tregs@assays$RNA)[grepl("^IL[[:digit:]]{1,2}-|^IFN[[:alpha:]]{1}[[:digit:]]{0,2}-|TNF-RNA|TGFB1-RNA", rownames(tregs@assays$RNA))& !grepl("-AS", rownames(tregs@assays$RNA))]
+chemokines <- rownames(tregs@assays$RNA)[grepl("^CXCL", rownames(tregs@assays$RNA))]
+granzymes <- rownames(tregs@assays$RNA)[grepl("^PRF|^GZM", rownames(tregs@assays$RNA))]
+TregActGenes <- c("IL10", "TGFB1", "LGALS9", "HAVCR2", "CTLA4", "LAG3", "CD274", "PDCD1LG2", "GZMA", "GZMB", "PRF1", "FASLG", "ENTPD1", "NT5E", "IL2RA", "ICOS", "ICOSLG", "IDO1", "TIGIT")
+
+d1 <- dgeres1[rownames(dgeres1) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d2 <- dgeres2[rownames(dgeres2) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+d3 <- dgeres3[rownames(dgeres3) %in% c(integrins, ckr, selectins, cytokines, chemokines),]
+mixed <- c(d1$key, d2$key, d3$key) %>% unique()
+
+
+d1 <- dge2ggpubr(dgeres1, group1 = "CD38+ HLA-DR+ Tregs", group2 = "HLA-DR+ Tregs")
+d2 <- dge2ggpubr(dgeres2, "CD38+ HLA-DR+ Tregs", "CD38+ Tregs")
+d3 <- dge2ggpubr(dgeres3, "CD38+ Tregs", "HLA-DR+ Tregs")
+dge.combined <- rbind(d1, rbind(d2,d3))
+
+ls <- list(integrins, ckr, selectins, cytokines, chemokines, mixed, genes[1:29], genes[30:59], rf, granzymes, paste0(TregActGenes, "-RNA"))
+names(ls) <- c("integrins", "ckr", "selectins", "cytokines", "chemokines", "mixed", "genes1", "genes2", "rf", "granzymes", "TregActGenes")
+
+pdf(paste0(path.out, "Z_feature_boxplots_RNA.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- plot_features3(tregs, 
+                       rna.features = ls[g] %>% unlist(), 
+                       group_by = "Treg_phenotpe", 
+                       split_by = NULL, evencells = FALSE, 
+                       comparisons = dge.combined, 
+                       write.excel = FALSE)
+  p1 %>% print()
+}
+dev.off()
+ckr %in% dge.combined$key
+```
+
+
+Overall happy, the statistics may need a tweak. It seems less dramatic here than in the plot_features, since the noise of the negative cells is reduced.
+```{r, fig.height=9, fig.width=16}
+comparisons <- list(c("CD38+ Tregs", "HLA-DR+ Tregs"), c("CD38+ HLA-DR+ Tregs", "CD38+ Tregs"), c("CD38+ HLA-DR+ Tregs", "HLA-DR+ Tregs"))
+
+pdf(paste0(path.out, "Z_feature_fraction_boxplots_RNA.pdf"), height = 9, width = 16, onefile = TRUE)
+for(g in names(ls)){
+  print(g)
+  if(ls[g] %>% unlist() %>% length() == 0){
+    next
+  }
+  p1 <- fractions2(tregs, rf = ls[g] %>% unlist(), group_by = "Treg_phenotpe", bulk_by = "patient_id", split_by = NULL, comparisons = NULL, method = "ziwilcox.test")
+  p1 %>% print()
+  #write.xlsx(table1, paste0(path.out, "Z ", g," fraction.xlsx"))
+}
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+## Pairwise GSEA between subclusters
+Here, we do pairwise comparisons between the subclusters using GSEA and plot the top 5 results as Enrichment plots.
+```{r tregs subclustering}
+#Import GO term for immunological processes
+hallmarks<- msigdbr(species = "Homo sapiens", category = "H")
+kegg<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "KEGG")
+GO <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP")
+immproc <- read_delim(paste0(path.files, "GO_term_summary_20220531_063040.txt"),
+    delim = "\t", escape_double = FALSE,
+    trim_ws = TRUE)
+immproc <- immproc$`Annotated Term` %>% toupper() %>% paste("GOBP", .) %>% str_replace_all(" ", "_")
+GO <- GO[GO$gs_name %in% immproc,]
+
+TregActGenes <- c("IL10", "IL35", "TGFB1", "LGALS9", "HAVCR2", "CTLA4", "LAG3", "CD274", "PDCD1LG2", "GZMA", "GZMB", "PRF1", "FASLG", "ENTPD1", "NT5E", "LLRC32", "IL2RA", "ICOS", "ICOSLG", "IDO1", "TIGIT")
+TregAct <- data.frame("gs_name" = "TregAct", "gene_symbol" = TregActGenes)
+
+#Run fgsea on DGE results
+genesets <- TregAct
+name <- "TregAct"
+#####cd38+hladr+ / hladr+
+go1 <- run_fgsea(dgeres1, gene_set = genesets, suffix = "-RNA", sampleSize = 1000)
+
+write.xlsx(go1, paste0(path.out, "15a_Treg_cd38hladr_vs_hladr_GSEA_", name,".xlsx"))
+
+go1s <- go1 %>% arrange(abs(NES)) %>% .[1:15,] %>% mutate("pathway" = factor(pathway, levels = .$pathway))
+
+pdf(paste0(path.out, "15b_Treg_cd38hladr_vs_hladr_GSEAbarplot_", name,".pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go1s, aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR", title = paste0("cd38hladr_vs_hladr_", name, "_pathways"))+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go1s$pathway)))
+dev.off()
+
+pdf(paste0(path.out, "15c_Treg_cd38hladr_vs_hladr_EnrichmentPlots_", name,".pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres1, gene_set = genesets, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+
+#####cd38+hladr+ / hladr+
+go2 <- run_fgsea(dgeres2, gene_set = genesets, suffix = "-RNA", sampleSize = 1000)
+write.xlsx(go2, paste0(path.out, "15d_Treg_cd38hladr_vs_cd38_GSEA_", name,".xlsx"))
+
+go2s <- go2 %>% arrange(abs(NES)) %>% .[1:15,] %>% mutate("pathway" = factor(pathway, levels = .$pathway))
+
+pdf(paste0(path.out, "15e_Treg_cd38hladr_vs_cd38_GSEAbarplot_", name,".pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go2s, aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black", size = 3)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR", title = paste0("cd38hladr_vs_cd38_", name, "_pathways"))+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go2s$pathway)))
+dev.off()
+
+pdf(paste0(path.out, "15f_Treg_cd38hladr_vs_cd38_EnrichmentPlots_", name,".pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres2, gene_set = genesets, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+
+#####hladr+ / cd38+
+go3 <- run_fgsea(dgeres3, gene_set = genesets, suffix = "-RNA", sampleSize = 1000)
+write.xlsx(go2, paste0(path.out, "15g_Treg_hladr_vs_cd38_GSEA_", name,".xlsx"))
+
+go3s <- go3 %>% arrange(abs(NES)) %>% .[1:15,] %>% mutate("pathway" = factor(pathway, levels = .$pathway))
+
+pdf(paste0(path.out, "15h_Treg_hladr_vs_cd38_GSEAbarplot_", name,".pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go3 %>% arrange(padj) %>% .[1:15,], aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR", title = paste0("hladr_vs_cd38_", name, "_pathways"))+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go3s$pathway)))
+dev.off()
+
+pdf(paste0(path.out, "15i_Treg_hladr_vs_cd38_EnrichmentPlots_", name,".pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres3, gene_set = genesets, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+```
+
+#GSEA Spider Diagram
+```{r, fig.width=16, fig.height=9}
+# pathways <- c("KEGG_REGULATION_OF_ACTIN_CYTOSKELETON", "KEGG_OXIDATIVE_PHOSPHORYLATION", "KEGG_GLYCOLYSIS_GLUCONEOGENESIS", "KEGG_LEUKOCYTE_TRANSENDOTHELIAL_MIGRATION", "KEGG_PROTEIN_EXPORT")
+# nes <- rbind(go1[go1$pathway %in% pathways, c("pathway", "NES")] %>% column_to_rownames("pathway") %>% unlist(),
+#              go2[go2$pathway %in% pathways, c("pathway", "NES")] %>% column_to_rownames("pathway") %>% unlist(),
+#              go3[go3$pathway %in% pathways, c("pathway", "NES")] %>% column_to_rownames("pathway") %>% unlist())
+# 
+# data <- rbind(rep(max(nes), 5), rep(0,5), nes) %>% as.data.frame()
+
+gsva_res <- run_gsva(activated, genesets = hallmarks)
+#write.xlsx(as.data.frame(gsva_res), paste0(path.out, "15j_Treg_GSVA_GO.xlsx"))
+
+data <- gsva_res %>% t() %>% as.data.frame() %>% dplyr::select("HALLMARK_MTORC1_SIGNALING", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_GLYCOLYSIS")
+
+#data <- gsva_res %>% t() %>% as.data.frame() %>% dplyr::select("GOBP_POSITIVE_REGULATION_OF_T_CELL_RECEPTOR_SIGNALING_PATHWAY", "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_IL6_JAK_STAT3_SIGNALING", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_GLYCOLYSIS")
+
+# data <- gsva_res %>% t() %>% as.data.frame() %>% dplyr::select("KEGG_RIBOSOME", "KEGG_CELL_CYCLE", "KEGG_JAK_STAT_SIGNALING_PATHWAY", "KEGG_CELL_ADHESION_MOLECULES_CAMS", "KEGG_OXIDATIVE_PHOSPHORYLATION")
+# 
+# data <- gsva_res %>% t() %>% as.data.frame() %>% dplyr::select("KEGG_MTOR_SIGNALING_PATHWAY", "KEGG_JAK_STAT_SIGNALING_PATHWAY", "KEGG_LEUKOCYTE_TRANSENDOTHELIAL_MIGRATION", "KEGG_CELL_ADHESION_MOLECULES_CAMS", "KEGG_OXIDATIVE_PHOSPHORYLATION")
+# rownames(gsva_res)
+
+# var <- rowVars(gsva_res)
+# gsva_res <- gsva_res %>% as.data.frame()
+# gsva_res$var <- var
+# topvar <- gsva_res %>% arrange(-var) %>% rownames() %>% head(5)
+# data <- gsva_res[topvar,] %>% dplyr::select(-var) %>% t() %>% as.data.frame()
+
+data <- rbind(rep(max(data), 5), rep(min(data), 5), data)
+
+# Color vector
+colors_border=c( rgb(0.2,0.5,0.5,0.9), rgb(0.8,0.2,0.5,0.9) , rgb(0.7,0.5,0.1,0.9) )
+colors_in=c( rgb(0.2,0.5,0.5,0.4), rgb(0.8,0.2,0.5,0.4) , rgb(0.7,0.5,0.1,0.4) )
+
+# plot with default options:
+#pdf(paste0(path.out, "15k_Treg_GSVA_SpiderPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+radarchart( data  , axistype=1 , 
+    #custom polygon
+    pcol=colors_border , pfcol=colors_in , plwd=4 , plty=1,
+    #custom the grid
+    cglcol="grey", cglty=1, axislabcol="grey", caxislabels=signif(seq(min(data),max(data), length.out = 5),2), cglwd=0.8,
+    #custom labels
+    vlcex=1 
+    )
+
+# Add a legend
+legend(x=0.7, y=1, legend = rownames(data[-c(1,2),]), bty = "n", pch=20 , col=colors_border , text.col = "black", cex=1.2, pt.cex=3)
+#dev.off()
+```
+
+
+
+# DGE & GSEA of activated vs resting vs naive
+
+```{r}
+mt <- data.frame("old_cluster" = tregs@meta.data$Treg_phenotpe %>% levels(), "new_cluster" = c(rep("activated Tregs", 3), "naive Tregs", "resting Tregs"))
+tregs <- merge_clusters(tregs, cluster_column = "Treg_phenotpe", merging_table = mt, merging_name = "treg_remerging")
+tregs@meta.data$treg_remerging <-  factor(tregs@meta.data$treg_remerging, levels = c("activated Tregs", "resting Tregs", "naive Tregs"))
+
+```
+
+
+## Pairwise Differential Gene Expression  activated vs resting vs naive
+Here, we do pairwise Differential Gene and Protein Expression (DGE & DPE).
+```{r tregs subclustering}
+#######Comparing CD38 to HLADR activated clusters#####
+## get cell_ids for activated clusters
+activated <- rownames(tregs@meta.data[tregs@meta.data$treg_remerging=="activated Tregs",])
+resting <- rownames(tregs@meta.data[tregs@meta.data$treg_remerging=="resting Tregs",])
+naive <- rownames(tregs@meta.data[tregs@meta.data$treg_remerging=="naive Tregs",])
+
+
+## DGE for clusters 2 & 3 (hladr & cd38 activated clusters)
+#activated vs resting
+dgeres1 <- tregs %>% FindMarkers(ident.1 = activated, ident.2 = resting, assay = "RNA", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dgeres1, paste0(path.out, "16a_Treg_activated_vs_resting_RNA.xlsx"))
+
+dperes1 <- tregs %>% FindMarkers(ident.1 = activated, ident.2 = resting, assay = "Protein", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dperes1, paste0(path.out, "16b_Treg_activated_vs_resting_Protein.xlsx"))
+
+# pdf(paste0(path.out, "16c_activated_vs_resting_violin_feature_plots.pdf"), height = 9, width = 16, onefile = TRUE)
+# plot_pbfeatures(x = tregs, pf = pf, rf = rf, group.by = "Treg_phenotpe", bulk.by = "patient_id", paired = FALSE)
+# plot_features(sbclstr, pf, rf, protein.stats = Tregs.treatment.Protein.markers, rna.stats = Tregs.treatment.RNA.markers, evencells = TRUE)
+# fractions(sbclstr, pf, rf)
+# dev.off()
+
+toplot <- dgeres1 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05,"gene"] <- NA
+
+pdf(paste0(path.out, "16d_activated_vs_resting_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+
+#activated vs naive
+dgeres2 <- tregs %>% FindMarkers(ident.1 = activated, ident.2 = naive, assay = "RNA", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dgeres2, paste0(path.out, "16e_Treg_activated_vs_naive_RNA.xlsx"))
+
+dperes2 <- tregs %>% FindMarkers(ident.1 = activated, ident.2 = naive, assay = "Protein", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dperes2, paste0(path.out, "16f_Treg_activated_vs_naive_Protein.xlsx"))
+
+toplot <- dgeres2 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05,"gene"] <- NA
+
+pdf(paste0(path.out, "16g_activated_vs_naive_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+
+#resting vs naive
+dgeres3 <- tregs %>% FindMarkers(ident.1 = resting, ident.2 = naive, assay = "RNA", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dgeres3, paste0(path.out, "16h_Treg_resting_vs_naive_RNA.xlsx"))
+
+dperes3 <- tregs %>% FindMarkers(ident.1 = resting, ident.2 = naive, assay = "Protein", logfc.threshold = 0, test.use = "wilcox")
+write.xlsx(dperes3, paste0(path.out, "16i_Treg_resting_vs_naive_Protein.xlsx"))
+
+toplot <- dgeres3 %>% 
+  rownames_to_column("gene") %>%
+  mutate("gene" = str_replace_all(gene, pattern = "-RNA", replacement = ""))
+
+toplot[toplot$p_val_adj > 0.05,"gene"] <- NA
+
+pdf(paste0(path.out, "16j_resting_vs_naive_VolcanoPlot.pdf"), height = 9, width = 16, onefile = TRUE)
+ggplot(toplot, aes(x = avg_log2FC, y = -log10(p_val_adj)))+
+  geom_point()+
+  geom_text_repel(aes(label = gene))+
+  theme_bw()+
+  labs(y = "-Log10 FDR", x = "Log2 FC")
+dev.off()
+```
+
+
+## DoHeatmap on DGE & DPE activated vs resting vs naive
+```{r tregs subclustering, fig.height=10, fig.width=10}
+###RNAs
+#Find cluster-identifying protein and RNA markers
+genes <- rbind(dgeres1[!(grepl("^RPS[[:digit:]]+", rownames(dgeres1)) | grepl("^RPL[[:digit:]]+", rownames(dgeres1))),][1:45,], 
+               rbind(dgeres2[!(grepl("^RPS[[:digit:]]+", rownames(dgeres2)) | grepl("^RPL[[:digit:]]+", rownames(dgeres2))),][1:45,], 
+                     dgeres3[!(grepl("^RPS[[:digit:]]+", rownames(dgeres3)) | grepl("^RPL[[:digit:]]+", rownames(dgeres3))),][1:45,])) %>% 
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "[[:digit:]]*$", "")) %>% #remove special characters from the end of gene names
+  arrange(p_val) %>%
+  .$marker %>%
+  unique()
+
+#remove ribosomal protein mrnas: had to include this in the initial gene filtering, since most genes at the top of the list are ribosomal mRNAs
+# genes <- genes$marker[!(grepl("^RPS[[:digit:]]+", genes$marker) | grepl("^RPL[[:digit:]]+", genes$marker))] %>% unique() 
+
+#order genes by hierarchical clustering
+genes <- genes[tregs@assays$RNA[genes,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+
+###Proteins
+prots <- rbind(dperes1[1:30,], rbind(dperes2[1:30,], dperes3[1:30,])) %>% 
+  rownames_to_column("marker") %>%
+  mutate("marker" = str_replace_all(marker, "([[:digit:]]{1})[[:digit:]]{1}$", "\\1")) %>% #remove special characters from the end of gene names
+  mutate("marker" = str_replace_all(marker, "(Protein)[[:digit:]]{1}$", "\\1")) %>% #remove special characters from the end of gene names
+  arrange(p_val) %>% 
+  .[,"marker"] %>%
+  unique()
+
+#order prots by hierarchical clustering
+prots <- prots[tregs@assays$Protein[prots,] %>% as.data.frame() %>% dist() %>% hclust() %>% .$order]
+
+#The data needs to be scaled prior to creating heatmaps. If the data is not yet scaled, uncomment these two lines.
+# tregs <- ScaleData(tregs, assay = "RNA")
+# tregs <- ScaleData(tregs, assay = "Protein")
+
+pdf(paste0(path.out, "16k_Treg_remerged_heatmaps.pdf"), height = 10, width = 10, onefile = TRUE)
+DoHeatmap(tregs, features = genes, assay = "RNA", raster = FALSE, group.by = "treg_remerging")
+DoHeatmap(tregs, features = prots, assay = "Protein", raster = FALSE, group.by = "treg_remerging")
+dev.off()
+```
+
+## Pairwise GSEA activated vs resting vs naive
+Here, we do pairwise comparisons between the subclusters using GSEA and plot the top 5 results as Enrichment plots.
+```{r tregs subclustering}
+#Import GO term for immunological processes
+hallmarks<- msigdbr(species = "Homo sapiens", category = "H")
+kegg<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "KEGG")
+go <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP")
+immproc <- read_delim(paste0(path.files, "GO_term_summary_20220531_063040.txt"),
+    delim = "\t", escape_double = FALSE,
+    trim_ws = TRUE)
+immproc <- immproc$`Annotated Term` %>% toupper() %>% paste("GOBP", .) %>% str_replace_all(" ", "_")
+go <- go[go$gs_name %in% immproc,]
+
+#Run fgsea on DGE results
+
+##### activated_vs_resting
+go1 <- run_fgsea(dgeres1, gene_set = go, suffix = "-RNA", sampleSize = 1000)
+go1$pathway <- factor(go1$pathway, levels = go1$pathway)
+write.xlsx(go1, paste0(path.out, "17a_Treg_activated_vs_resting_GSEA_GO.xlsx"))
+
+pdf(paste0(path.out, "17b_Treg_activated_vs_resting_GSEAbarplot_GO.pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go1[1:15,], aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR")+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go1[1:15,]$pathway %>% droplevels())))
+dev.off()
+
+pdf(paste0(path.out, "17c_Treg_activated_vs_resting_EnrichmentPlots_GO.pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres1, gene_set = go, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+
+##### activated_vs_naive
+go2 <- run_fgsea(dgeres2, gene_set = go, suffix = "-RNA", sampleSize = 1000)
+write.xlsx(go2, paste0(path.out, "17d_Treg_activated_vs_naive_GSEA_GO.xlsx"))
+
+go2$pathway <- factor(go2$pathway, levels = go2$pathway)
+
+pdf(paste0(path.out, "17e_Treg_activated_vs_naive_GSEAbarplot_GO.pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go2[1:15,], aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black", size = 3)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR")+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go2[1:15,]$pathway %>% droplevels())))
+dev.off()
+
+pdf(paste0(path.out, "17f_Treg_activated_vs_naive_EnrichmentPlots_GO.pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres2, gene_set = go, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+
+##### resting_vs_naive
+go3 <- run_fgsea(dgeres3, gene_set = go, suffix = "-RNA", sampleSize = 1000)
+write.xlsx(go2, paste0(path.out, "17g_Treg_resting_vs_naive_GSEA_GO.xlsx"))
+
+go3$pathway <- factor(go3$pathway, levels = go3$pathway)
+
+pdf(paste0(path.out, "17h_Treg_resting_vs_naive_GSEAbarplot_GO.pdf"), height = 7, width = 16, onefile = TRUE)
+ggplot(go3[1:15,], aes(x = pathway, y = -log10(padj)))+
+  geom_bar(stat = "identity", fill = "black", col = "black", width = 0.7)+
+  theme_classic()+
+  coord_flip()+
+  geom_text(aes(label = LeadingEdge), hjust = -0.05, col = "black")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.7)))+
+  labs(y = "-log10 FDR")+
+  theme(axis.title.y = element_blank())+
+  scale_x_discrete(limits = rev(levels(go3[1:15,]$pathway %>% droplevels())))
+dev.off()
+
+pdf(paste0(path.out, "17i_Treg_resting_vs_naive_EnrichmentPlots_GO.pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(dgeres3, gene_set = go, suffix = "-RNA", sampleSize = 1000, top_n = 25)
+dev.off()
+```

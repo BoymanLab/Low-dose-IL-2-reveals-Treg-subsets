@@ -1,0 +1,675 @@
+---
+title: "06_IMC_Quantification"
+author: "docaspar"
+date: "1/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+# Load libraries
+```{r libs, message=FALSE}
+library(SingleCellExperiment)
+library(tidyverse)
+library(CATALYST)
+library(scater)
+library(rstudioapi)
+library(readxl)
+library(cowplot)
+library(diffcyt)
+library(ggpubr)
+library(pals)
+library(MetBrewer)
+library(rstatix)
+library(rasterpdf)
+library(xlsx)
+```
+
+# Set paths
+```{r set paths}
+rm(list = ls())
+
+setwd(dirname(getActiveDocumentContext()$path))
+
+path.files <- "../R_Files/cpout_combined/"
+path.out <- "../R_out/cpout_combined/"
+
+colvec_tp <- met.brewer("Monet",n=20)[c(12,18)]
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+colvec_ct <- met.brewer("Signac", 19)[c(6, 4, 3, 1, 8, 10, 13, 16:19)]
+names(colvec_ct) <- ct
+```
+
+
+# Load data
+```{r load data}
+sce <- readRDS(file = paste0(path.files, "sce_3pix2_batch2_subclustered_combined.rds"))
+```
+
+# Define markers
+Set markers of interest as type markers
+```{r sce DA prep}
+typemarkers <- c("CD45", "CD3", "CD4", "CD8", "CD25", "FOXp3", "HLADR", "CD11c", "CD1c", "CD117", "CD163", "CD141", "Ecadherin", "SMA", "Vimentin", "Ki67")
+
+rowData(sce)[rowData(sce)$marker_name %in% typemarkers,"marker_class"] <- "type"
+rowData(sce)[!rowData(sce)$marker_name %in% typemarkers,"marker_class"] <- "state"
+
+# sce_ei <- colData(sce)[c("sample_id", "condition", "Patient_ID")] %>% data.frame()
+# sce_ei$n_cells <- 1
+# sce_ei <- sce_ei %>% group_by(sample_id, condition, Patient_ID) %>% summarize("n_cells" = sum(n_cells))
+# metadata(sce)$experiment_info <- sce_ei
+type_markers(sce)
+state_markers(sce)
+```
+
+# Visualization
+
+## Visualilze all cells
+```{r}
+set.seed(1234)
+sce <- runDR(sce, dr = "UMAP", features = "type")
+
+#pdf(paste0(path.out, "01 Subclustered_UMAP_combined.pdf"), height = 9, width = 11, onefile = TRUE) #to save all the plots in one file
+plotDR(sce, dr = "UMAP", color_by = "subclusters") + scale_color_manual(values = colvec_ct)
+plotDR(sce, dr = "UMAP", color_by = type_markers(sce), ncol = 6)
+
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE, k_pal = colvec_ct)
+
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "01a Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 11, res = 200)
+plotDR(sce, dr = "UMAP", color_by = "subclusters") + 
+  scale_color_manual(values = colvec_ct) +
+  theme_cowplot() + 
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "01b Subclustered_UMAP_combined_raster.pdf"), height = 5, width = 11, res = 200)
+plotDR(sce, dr = "UMAP", color_by = type_markers(sce), ncol = 6) +
+  theme_cowplot() + 
+  theme(strip.background = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+#dev.off()
+```
+
+
+```{r, fig.height=7.5, fig.width=6}
+raster_pdf(filename = paste0(path.out, "01c Subclustered_UMAP_combined_raster.pdf"), height = 7.5, width = 6, res = 300)
+markers <- c("Ecadherin", "CD45", "CD3", "CD4", "FOXp3", "CD25", "HLADR", "CD141", "CD11c", "CD1c", "CD163", "CD117")
+plotDR(sce, dr = "UMAP", color_by = markers, ncol = 3)+
+  theme_cowplot()+
+  theme(strip.background = element_blank())
+dev.off()
+```
+
+## Visualize Leukocytes
+```{r}
+sceleuko <- sce[,colData(sce)$primary_clustering %in% c("Tcells", "APCs")]
+
+set.seed(1234)
+sceleuko <- runDR(sceleuko, dr = "UMAP", features = "type")
+
+pdf(paste0(path.out, "02a Subclustered_Leukocytes_UMAP_combined.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+plotDR(sceleuko, dr = "UMAP", color_by = "subclusters") + scale_color_manual(values = colvec_ct[1:7]) + geom_point(size = 3)
+plotDR(sceleuko, dr = "UMAP", color_by = "subclusters", facet_by = "Timepoint") + scale_color_manual(values = colvec_ct[1:7]) + geom_point(size = 3)
+plotDR(sceleuko, dr = "UMAP", color_by = type_markers(sce), ncol = 6)
+dev.off()
+```
+
+## Visualize Leukocytes
+```{r}
+markers <- c("CD3", "CD4", "FOXp3", "CD25", "CD8")
+
+scetcells <- sce[,colData(sce)$primary_clustering %in% c("Tcells")]
+
+set.seed(1234)
+scetcells <- runDR(scetcells, dr = "UMAP", features = markers)
+
+pdf(paste0(path.out, "02b Subclustered_Leukocytes_UMAP_combined.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+plotDR(scetcells, dr = "UMAP", color_by = "subclusters") + scale_color_manual(values = colvec_ct[1:7]) + geom_point(size = 5)
+plotDR(scetcells, dr = "UMAP", color_by = "subclusters", facet_by = "Timepoint") + scale_color_manual(values = colvec_ct[1:7]) + geom_point(size = 5)
+plotDR(scetcells, dr = "UMAP", color_by = markers, ncol = 6)
+dev.off()
+```
+
+## Simplified Heatmap
+```{r}
+sceff <- sce[,colData(sce)$primary_clustering %in% c("Tcells", "APCs")]
+
+moi <- c("CD45", "CD3", "CD4", "CD8", "CD45RA", "CD25", "FOXp3", "HLADR", "CD141", "CD1c", "CD117", "CD163")
+
+rowData(sceff)[rowData(sceff)$marker_name %in% moi, "marker_class"] <- "type"
+rowData(sceff)[!rowData(sceff)$marker_name %in% moi, "marker_class"] <- "state"
+
+pdf(paste0(path.out, "03 Simplified_Heatmap.pdf"), height = 9, width = 16, onefile = TRUE)
+plotExprHeatmap(sceff, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE, k_pal = colvec_ct)
+dev.off()
+
+pdf(paste0(path.out, "03 Simplified_Heatmap_CD27.pdf"), height = 9, width = 16, onefile = TRUE)
+moi <- c("CD45", "CD3", "CD4", "CD8", "CD45RA", "CD25", "CD27", "FOXp3", "HLADR", "CD141", "CD1c", "CD117", "CD163")
+plotExprHeatmap(sceff, features = moi,
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE, k_pal = colvec_ct)
+dev.off()
+```
+
+# Differential Abundance (DA) Analysis
+We use the colData to extract frequencies and plot them afterwards. We obtain the frequencies of leukocytes by filtering for Tcells and APCs
+```{r DA, fig.width=16, fig.height=5}
+sce_leuko <- sce[,colData(sce)$primary_clustering %in% c("Tcells", "APCs")]
+trues <- paste(colData(sce_leuko)$condition, colData(sce_leuko)$sample_id, sep = "_") %>% unique()
+dtp <- colData(sce_leuko)[c("subclusters", "condition", "sample_id")] %>% 
+  table() %>% 
+  as.data.frame() %>%
+  mutate("cs" = paste(condition, sample_id, sep = "_")) %>%
+  dplyr::rename("counts" = Freq) %>%
+  dplyr::filter(cs %in% trues)
+
+
+totdtp <- colData(sce_leuko)[c("sample_id")] %>% table() %>% data.frame() %>% dplyr::rename("sample_id" = Var1, "totcounts" = Freq)
+dtp <- merge(dtp, totdtp) %>% mutate("Freq" = counts/totcounts*100)
+dtp$subclusters <- factor(dtp$subclusters, levels = ct)
+
+write.xlsx(dtp, paste0(path.out, "04a Freq_of_leukocytes.xlsx"), row.names = FALSE)
+
+pdf(paste0(path.out, "04b Frequencies_of_Leukocytees.pdf"), height = 5, width = 16, onefile = TRUE) #to save all the plots in one file
+ggplot(dtp, aes(x = condition, y = Freq, col = condition))+
+  geom_violin(aes(fill = condition), alpha = 0.5, draw_quantiles = 0.5)+
+  geom_jitter(width = 0.1)+
+  #geom_point()+
+  #geom_line(aes(group = sample_id), col = "grey")+
+  facet_wrap("subclusters", scales = "free_y", nrow = 1)+
+  theme_classic()+
+  labs(col = "Time point", fill = "Time point", title = "Cell type Frequencies of Leukocytes", y = "Frequency of Leukocytes (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec_tp)+
+  scale_fill_manual(values = colvec_tp)+
+  stat_compare_means(comparisons = list(c("Before", "After")), method = "t.test")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+dev.off()
+
+
+test.DA <- dtp %>% 
+  group_by(subclusters) %>%
+  wilcox_test(Freq~condition) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")%>%
+  add_significance("p") %>%
+  add_xy_position(x = "subclusters", dodge = 0.75)
+
+pdf(paste0(path.out, "04c Frequencies_of_Leukocytees.pdf"), height = 5, width = 8) #to save all the plots in one file
+ggplot(dtp, aes(x = subclusters, y = Freq))+
+  geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5, outlier.shape = NA)+
+  geom_point(aes(col = condition), position = position_jitterdodge(dodge.width = 0.8, jitter.width = 0.1, jitter.height = 0))+
+  theme_cowplot()+
+  labs(col = "Time point", fill = "Time point", title = "Cell type Frequencies of Leukocytes", y = "Frequency of Leukocytes (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_manual(values = colvec_tp)+
+  scale_fill_manual(values = colvec_tp)+
+  stat_pvalue_manual(test.DA, label = "p")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+dev.off()
+```
+
+# Differential State analysis (DS)
+```{r DS}
+mfidf <- cbind(assay(sce_leuko, "exprs") %>% t() %>% as.data.frame(), colData(sce_leuko) %>% as.data.frame()) %>% dplyr::select(rownames(sce_leuko), "sample_id", "subclusters", "condition")
+mfidfga <- mfidf %>% 
+  dplyr::group_by(sample_id, subclusters, condition) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE) %>%
+  gather(key = "marker", value = "mfi", rownames(sce_leuko))
+mfidfga$condition <- mfidfga$condition %>% factor(levels = c("Before", "After"))
+
+#write.xlsx(mfidfga %>% dplyr::filter(subclusters == "Tregs") %>% as.data.frame(), paste0(path.out, "05a Treg_markers.xlsx"), row.names = FALSE)
+#write.xlsx(mfidfga %>% dplyr::filter(marker == "Ki67") %>% as.data.frame(), paste0(path.out, "05b Ki67_on_leukocytes.xlsx"), row.names = FALSE)
+
+stat.test <- mfidfga %>%
+  dplyr::filter(marker %in% type_markers(sce)) %>%
+  group_by(subclusters, marker) %>%
+  t_test(mfi ~ condition) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")%>%
+  add_significance("p")
+stat.test$marker
+
+stat.test1 <- stat.test %>% add_xy_position(x = "subclusters", dodge = 0.75)
+stat.test2 <- stat.test %>% add_xy_position(x = "marker", dodge = 0.75)
+
+
+#pdf(paste0(path.out, "05c Marker_Expression_pval.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+
+ggplot(mfidfga %>% dplyr::filter(marker %in% type_markers(sce)), aes(x = subclusters, y = mfi))+
+    geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5)+
+    geom_point(aes(col = condition, fill = condition), position = position_dodge(width = 0.75))+
+    #geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("marker", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = "Marker expression of Leukocytes", y = "MFI")+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank(),
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+    scale_color_manual(values = colvec_tp)+
+    scale_fill_manual(values = colvec_tp)+
+    stat_pvalue_manual(stat.test1, label = "p.signif", tip.length = 0.02)+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+ggplot(mfidfga %>% dplyr::filter(marker %in% type_markers(sce)), aes(x = marker, y = mfi))+
+    geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5)+
+    geom_point(aes(col = condition, fill = condition), position = position_dodge(width = 0.75))+
+    #geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("subclusters", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = "Marker expression of Leukocytes", y = "MFI")+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank(),
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+    scale_color_manual(values = colvec_tp)+
+    scale_fill_manual(values = colvec_tp)+
+    stat_pvalue_manual(stat.test2, label = "p.signif", tip.length = 0.02)+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+for(mrkr in unique(mfidfga$marker)){
+  p1 <- ggplot(mfidfga %>% dplyr::filter(marker == mrkr), aes(x = condition, y = mfi, col = condition, fill = condition))+
+    geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+    geom_point()+
+    facet_wrap("subclusters", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = paste0(mrkr, " MFI per cluster"), y = paste0("MFI (", mrkr, ")"))+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())+
+    scale_color_manual(values = colvec_tp)+
+    scale_fill_manual(values = colvec_tp)+
+    stat_compare_means(comparisons = list(c("Before", "After")), method = "t.test")+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+    print(p1)
+}
+
+
+stat.test3 <- mfidfga %>%
+  group_by(subclusters, marker) %>%
+  t_test(mfi ~ condition) %>%
+  add_significance("p") %>%
+  add_xy_position(x = "subclusters", dodge = 0.75)
+
+
+markers <- unique(mfidfga$marker)
+#markers <- c("CD38", "HLADR")
+
+pdf(paste0(path.out, "05d Marker_Expression_pval.pdf"), height = 5, width = 8, onefile = TRUE) #to save all the plots in one file
+for(mrkr in markers){
+  int <- mfidfga %>% dplyr::filter(marker == mrkr)
+  int.stat <- stat.test3 %>% dplyr::filter(marker == mrkr)
+  int.stat <- int.stat %>%
+    adjust_pvalue(method = "fdr") %>%
+    add_significance("p.adj")
+  p1 <- ggplot(int, aes(x = subclusters, y = mfi))+
+    geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5, outlier.shape = NA)+
+    geom_point(aes(col = condition), position = position_jitterdodge(dodge.width = 0.8, jitter.width = 0.2, jitter.height = 0))+
+    #facet_wrap("subclusters", scales = "free_y")+
+    theme_cowplot()+
+    labs(col = "Time point", fill = "Time point", title = paste0(mrkr, " Mean intensity per cell type"), y = paste0("Mean intensity (", mrkr, ")"))+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1))+
+    scale_color_manual(values = colvec_tp)+
+    scale_fill_manual(values = colvec_tp)+
+    stat_pvalue_manual(int.stat, label = "p")+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+  
+  print(p1)
+}
+dev.off()
+```
+
+
+```{r}
+pdf(paste0(path.out, "06a Ki67+ Fraction.pdf"), height = 5, width = 8, onefile = TRUE) #to save all the plots in one file
+
+
+ki67 <- mfidf %>% dplyr::select("sample_id", "subclusters", "condition", "Ki67")
+ki67$Ki67 %>% hist(breaks = 1000, main = "Distribution of Ki-67 measurements")
+ki67$pos05 <- ki67$Ki67 > 0.5
+ki67$pos1 <- ki67$Ki67 > 1
+ki67$pos15 <- ki67$Ki67 > 1.5
+
+
+totcounts <- ki67[c("sample_id", "subclusters")] %>% table() %>% as.data.frame()
+
+ki67 <- ki67 %>% 
+  dplyr::select(-Ki67) %>%
+  mutate_at(vars(pos05, pos1, pos15), as.numeric) %>%
+  merge(totcounts) %>%
+  mutate("pos05frac" = (pos05/Freq)*100) %>%
+  mutate("pos1frac" = (pos1/Freq)*100) %>%
+  mutate("pos15frac" = (pos15/Freq)*100)
+
+#write.xlsx(ki67 %>% as.data.frame(), paste0(path.out, "06b Ki67+ Fraction.xlsx"), row.names = FALSE)
+
+
+stat.test <- ki67 %>%
+  group_by(subclusters) %>%
+  wilcox_test(pos05frac ~ condition) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")%>%
+  add_significance("p") %>%
+  mutate("p.format" = signif(p.adj, 2))
+
+stat.test1 <- stat.test %>% add_xy_position(x = "subclusters", dodge = 0.75)
+
+ggplot(ki67, aes(x = subclusters, y = pos05frac))+
+  geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5)+
+  geom_point(aes(col = condition, fill = condition), position = position_dodge(width = 0.75))+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Ki-67+ Fraction on Leukocytes (Cut-off: 0.5)", y = "Positive Fraction (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_color_manual(values = colvec_tp)+
+  scale_fill_manual(values = colvec_tp)+
+  stat_pvalue_manual(stat.test1, label = "p.format", tip.length = 0.02)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+stat.test <- ki67 %>%
+  group_by(subclusters) %>%
+  wilcox_test(pos1frac ~ condition) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")%>%
+  add_significance("p") %>%
+  mutate("p.format" = signif(p.adj, 2))
+
+stat.test1 <- stat.test %>% add_xy_position(x = "subclusters", dodge = 0.75)
+
+ggplot(ki67, aes(x = subclusters, y = pos1frac))+
+  geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5, outlier.shape = NA)+
+  geom_point(aes(col = condition, fill = condition), position = position_jitterdodge(dodge.width = 0.75, jitter.width = 0.2, jitter.height = 0))+
+  theme_cowplot()+
+  labs(col = "Time point", fill = "Time point", title = "Ki-67+ Fraction on Leukocytes (Cut-off: 1)", y = "Positive Fraction (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust=1))+
+  scale_color_manual(values = colvec_tp)+
+  scale_fill_manual(values = colvec_tp)+
+  stat_pvalue_manual(stat.test1, label = "p.format", tip.length = 0.02)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+stat.test <- ki67 %>%
+  group_by(subclusters) %>%
+  t_test(pos15frac ~ condition) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj")%>%
+  add_significance("p") %>%
+  mutate("p.format" = signif(p.adj, 2))
+
+stat.test1 <- stat.test %>% add_xy_position(x = "subclusters", dodge = 0.75)
+
+ggplot(ki67, aes(x = subclusters, y = pos15frac))+
+  geom_boxplot(aes(col = condition, fill = condition), alpha = 0.5)+
+  geom_point(aes(col = condition, fill = condition), position = position_dodge(width = 0.75))+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Ki-67+ Fraction on Leukocytes (Cut-off: 1.5)", y = "Positive Fraction (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_color_manual(values = colvec_tp)+
+  scale_fill_manual(values = colvec_tp)+
+  stat_pvalue_manual(stat.test1, label = "p.format", tip.length = 0.02)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+dev.off()
+```
+
+
+# Save combined SCE object
+```{r save SCE}
+saveRDS(sce,file = paste0(path.files, "sce_3pix2_batch2_subclustered_combined.rds"))
+```
+
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
+
+# Archive
+
+## Frequency of Leukocytes
+This chunk creates a table of logFC and pvals of percentages of leukocytes.
+```{r sce DA freq leuko, eval = FALSE}
+coldata <- colData(sce) %>% 
+  as.data.frame() %>%
+  dplyr::filter(primary_clustering %in% c("APCs", "Tcells")) %>%
+  dplyr::select(cellID, ImageNumber, Timepoint, condition, Patient_ID, subclusters)
+
+tbl <- t(t(table(coldata[c("subclusters", "ImageNumber")]))/colSums(table(coldata[c("subclusters", "ImageNumber")])))*100
+tbl <- data.frame(tbl)
+tbl
+
+tbl$Timepoint <- "Before"
+tbl[tbl$ImageNumber %in% c(coldata[coldata$Timepoint == "After", "ImageNumber"] %>% unique()), "Timepoint"] <- "After"
+tbl$Timepoint <- factor(tbl$Timepoint, levels = c("Before", "After"))
+tbl$subclusters <- droplevels(tbl$subclusters)
+
+tbl_DA <- data.frame("cluster_id" = rep(NA, length(levels(tbl$subclusters))), 
+                     "logFC" = rep(NA, length(levels(tbl$subclusters))), 
+                     "p_adj" = rep(NA, length(levels(tbl$subclusters)))) #create empty data frame
+
+rownames(tbl_DA) <- levels(tbl$subclusters)
+
+tbl
+tbl_DA
+
+for(subcluster in levels(tbl$subclusters)){ #loop through subclusters
+  df <- tbl %>% dplyr::filter(subclusters == subcluster) #filter current subcluster
+
+  bf <- df[df$Timepoint == "Before", "Freq"] #vector with "Before" values
+  af <- df[df$Timepoint == "After", "Freq"] #vector with "After" values
+  tbl_DA[subcluster,] <- c(subcluster,log2(mean(af)/mean(bf)),t.test(bf, af)$p.value) #add results to corresponding row in results df
+}
+tbl_DA[,2] <- as.numeric(tbl_DA[,2]) #convert logFC column to numeric
+tbl_DA[,3] <- as.numeric(tbl_DA[,3]) #convert p value column to numeric
+tbl_DA
+```
+
+
+## Plotting results
+This chunk creates different heatmaps with CATALYST an shows frequencies as boxplots.
+```{r sce DA plotting, eval = FALSE}
+pdf(paste0(path.out, "IMC_DA.pdf"), height = 9, width = 16, onefile = TRUE)
+
+p <- plotDiffHeatmap(sce, tbl_DA, k = "custom", all = TRUE, col_anno = c("Patient_ID", "Timepoint"))
+
+p1 <- plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, col_dend = FALSE, col_clust = TRUE)
+
+p2 <- plotFreqHeatmap(sce, 
+    k = "custom",
+    hm_pal = rev(hcl.colors(10, "RdBu")),
+    m_pal = hcl.colors(4, "Temps"),
+    bars = TRUE, 
+    perc = TRUE,
+    col_clust = FALSE, 
+    col_anno = c("Timepoint", "Patient_ID"),
+    row_anno = FALSE)
+
+p3 <- plotFreqHeatmap(sce, 
+    k = "custom",
+    hm_pal = rev(hcl.colors(10, "RdBu")),
+    m_pal = hcl.colors(4, "Temps"),
+    bars = TRUE, 
+    perc = TRUE,
+    col_clust = FALSE, 
+    col_anno = c("Timepoint", "Patient_ID"),
+    row_dend = FALSE)
+p
+p1
+p3
+p1+p2
+
+plotMultiHeatmap(sce, k = "custom")
+
+# plotAbundances(sce, k = "custom", group_by = "condition")
+# plotAbundances(sce, k = "custom", group_by = "condition", by = "cluster_id")
+
+ggplot(tbl, aes(x = Timepoint, y = Freq, col = Timepoint))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(position=position_jitter(height=0, width=0.1))+
+  facet_wrap("subclusters", scales = "free_y")+
+  theme_bw()+
+  theme(strip.background = element_blank())+
+  #scale_color_brewer(palette = "Set1")+
+  scale_color_manual(values = colvec_tp)+
+  labs(y = "Percentage of leukocytes", x = "Timepoint", title = "IMC Differential Abundance")+
+  #stat_compare_means(aes(x = "condition"), comparisons = list(c("Before", "After")), method = "t.test", label = "p.signif")+ #plots ns/* instead pval
+  stat_compare_means(aes(x = "condition"), comparisons = list(c("Before", "After")), method = "t.test", label = "p.format")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))+
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+```
+
+
+## Differential State (DS) Analysis
+The DS methods of catalyst still fail because of the low abundance of some cell types, e.g. Tregs (maybe while modeling the data). This is a more manual approach.
+```{r SCE DS, warning=FALSE, eval=FALSE}
+#Subset data for marker and cell types of interest
+type_markers(sce)
+sce_int <- sce[c("CD25", "Ki67", "FOXp3", "HLADR"),!colData(sce)$subclusters %in% c("SmoothMuscleCells", "Epidermis", "Endothelium", "Fibroblasts")]
+df <- assay(sce_int, "exprs") %>% data.frame()
+df <- df %>% t() %>% data.frame()
+
+#add coldata information to the new data frame
+df$subclusters <- sce_int$subclusters
+df$condition <- sce_int$condition
+df$sample_id <- sce_int$sample_id
+
+#summarise data frame so we get one value for each subcluster (~7) and each condition (2) and each sample (17). Half of the pairings do not exist because the 17 samples are always either "Before" or "After", never both. Some additional lines are missing if no cells of a celltype are found on an image.
+df <- df %>% 
+  dplyr::group_by(subclusters, condition, sample_id) %>%
+  summarize_all("mean") %>%
+  as.data.frame()
+
+#creates an empty data frame with columns for cluster_id, marker_id, logFC and p_val and rows equal to the celltype*marker combinations.
+tbl_DS <- data.frame("cluster_id" = rep(NA, length(unique(df$subclusters))*nrow(sce_int)), "marker_id" = rep(NA, length(unique(df$subclusters))*nrow(sce_int)), "logFC" = rep(NA, length(unique(df$subclusters))*nrow(sce_int)), "p_val" = rep(NA, length(unique(df$subclusters))*nrow(sce_int)))
+
+rownames(tbl_DS) <- paste(rep(unique(df$subclusters), each = length(rownames(sce_int))), rownames(sce_int), sep = ".")
+
+#calculate t.test and log2fc for celltype*marker combinations with nested for loop (1st loop: cell type, 2nd loop: markers)
+#the output mimics the output of the diffcyt pipeline.
+for(subcluster in unique(df$subclusters)){
+  cur_cluster <- df %>% dplyr::filter(subclusters == subcluster)
+  for(marker in rownames(sce_int)){
+    test <- t.test(cur_cluster[cur_cluster$condition == "Before", marker], cur_cluster[cur_cluster$condition == "After", marker])
+    fc <- mean(cur_cluster[cur_cluster$condition == "After", marker])/mean(cur_cluster[cur_cluster$condition == "Before", marker])
+    tbl_DS[paste(subcluster, marker, sep = "."),] <- c(subcluster, marker, log2(fc), test$p.value)
+  }
+}
+
+tbl_DS[,3] <- as.numeric(tbl_DS[,3]) #convert logFC column to numeric
+tbl_DS[,4] <- as.numeric(tbl_DS[,4]) #convert p value column to numeric
+tbl_DS$p_adj <- p.adjust(p = tbl_DS$p_val, method = "BH") #correct for multiple testing
+
+#pdf(paste0(path, "/IMC_R_output/IMC_DS.pdf"), height = 9, width = 16, onefile = TRUE)
+#plots heatmap and adds logfc + pval as calculated
+plotDiffHeatmap(sce_int, tbl_DS, k = "custom", all = TRUE, col_anno = c("Patient_ID", "Timepoint"))
+
+#plot pseudobulk expression levels as boxplots
+plotPbExprs(sce[,!sce$subclusters %in% c("SmoothMuscleCells", "Epidermis", "Endothel", "Fibroblast")], k = "custom", features = "type", facet_by = "cluster_id") +
+  labs(col = "Timepoint", y = "Median Expression", title = "Differential Marker Expression") + 
+  theme(axis.title.x = element_blank(), plot.title = element_text(hjust = 0.5)) + 
+  scale_color_manual(values = colvec_tp)
+#dev.off()
+```
+
+
+```{r, eval=FALSE}
+design <- model.matrix(~0+ei(sce)$condition)
+contrast <- c(-1,1)
+metadata(sce)$cluster_codes <- data.frame("merging1" = colData(sce)$cluster_id)
+
+sceleuko <- sce[,colData(sce)$subclusters %in% c("Macrophages", "cDC2", "mature CD8", "Treg", "cDC1", "mature CD4", "Mast cells")]
+res_DA <- diffcyt(sceleuko, 
+                  clustering_to_use = "merging1",
+                  analysis_type = "DA", 
+                  method_DA = "diffcyt-DA-edgeR",
+                  design = design, 
+                  contrast = contrast, 
+                  verbose = TRUE)
+tbl_DA <- data.frame(rowData(res_DA$res)) %>% dplyr::select("cluster_id", "logFC", "p_adj") #tidy results
+rownames(tbl_DA) <- NULL
+print(data.frame(tbl_DA)[order(tbl_DA$p_adj),])
+```
+
+```{r DA&DE, message=FALSE, eval=FALSE, include=FALSE}
+# # #Why is pbMDS not working?
+# # pbMDS(sceTcells, color_by = "condition", by = "sample_id", features = "type")
+# # plotNRS(sceTcells, features = "type", color_by = "Timepoint")
+# 
+# 
+# colData(sceTcells)
+# plotAbundances(sceTcells, k = "merging1", group_by = "condition")
+# plotAbundances(sceTcells, k = "merging1", group_by = "condition", by = "cluster_id")
+# 
+# plotPbExprs(sceTcells, k = "merging1", features = "type", facet_by = "cluster_id", ncol = 2)
+# 
+# sceCD4 <- filterSCE(sceTcells, merging1 == "Treg" | merging1 == "mature CD4")
+# colData(sceCD4)
+# plotAbundances(sceCD4, k = "merging1", group_by = "condition")
+# plotAbundances(sceCD4, k = "merging1", group_by = "condition", by = "cluster_id")
+# 
+# df1 <- as.data.frame(table(colData(sceCD4)[,c("merging1", "Timepoint", "sample_id")]))
+# df1
+# ggplot(df1, aes(x = merging1, y = Freq))+
+#   geom_boxplot(aes(color = Timepoint))+
+#   geom_point(aes(color = Timepoint), position=position_dodge(0.75))
+# cluster_codes(sceTcells)
+```
+
+### Counts
+This chunk creates a table of logFC and pvals of counts rather than percentages. I think logFC and pvals based on percentage of leukocytes is more appropriate.
+```{r sce DA counts, eval=FALSE}
+(design <- model.matrix(~0+ei(sce)$condition))
+
+tbl <- data.frame(table(colData(sce)[,c("subclusters","sample_id", "condition")])) #create table with cluster frequencies
+tbl
+
+tbl_DA <- data.frame("cluster_id" = rep(NA, length(levels(tbl$subclusters))), 
+                     "logFC" = rep(NA, length(levels(tbl$subclusters))), 
+                     "p_adj" = rep(NA, length(levels(tbl$subclusters)))) #create empty data frame
+
+rownames(tbl_DA) <- levels(tbl$subclusters)
+
+for(subcluster in levels(tbl$subclusters)){ #loop through subclusters
+
+  df <- tbl %>% dplyr::filter(subclusters == subcluster) #filter current subcluster
+  df <- df[as.logical(design),] #table returns values before and after for all 17 images each, even though it's only 8 and 9. this filters out artificial rows based on the design matrix.
+
+  bf <- df[df$condition == "Before", "Freq"] #vector with "Before" values
+  af <- df[df$condition == "After", "Freq"] #vector with "After" values
+  tbl_DA[subcluster,] <- c(subcluster,log2(mean(af)/mean(bf)),t.test(bf, af)$p.value) #add results to corresponding row in results df
+}
+tbl_DA[,2] <- as.numeric(tbl_DA[,2]) #convert logFC column to numeric
+tbl_DA[,3] <- as.numeric(tbl_DA[,3]) #convert p value column to numeric
+tbl_DA
+t.test(bf, af)
+```

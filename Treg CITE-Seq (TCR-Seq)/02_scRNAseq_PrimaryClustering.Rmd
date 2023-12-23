@@ -1,0 +1,155 @@
+---
+title: "02_scRNAseq_Downstream_Jan"
+author: "docaspar"
+date: "11/1/2021"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(RColorBrewer)
+library(readxl)
+library(MatrixGenerics)
+library(ggrepel)
+library(rasterpdf)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/01 Primary/"
+
+# lupus <- readRDS(file = paste0(path.files, "20221115_Seurat_integrated.rds"))
+lupus <- readRDS(file = paste0(path.files, "20230926_Seurat_integrated.rds"))
+lupus@meta.data
+lupus
+lupus <- lupus[,lupus@meta.data$HTO_classification.global == "Singlet"]
+
+colvec <- met.brewer("Monet",n=20)[c(10,17)]
+DefaultAssay(lupus) <- "integrated.adt"
+
+#Load functions
+source("scRNA_functions.R")
+```
+
+
+```{r}
+lupus@assays
+lupus@meta.data
+lupus@meta.data$hash.ID %>% table()
+```
+
+
+# Data exploration
+
+## Dimensionality reduction
+### PCA
+```{r combine assays}
+#lupus <- ScaleData(lupus, assay = "integrated.adt", slot = "data") #scale if not scaled previously
+lupus@assays$integrated.adt@scale.data %>% dim()
+
+lupus <- FindVariableFeatures(lupus, assay = "integrated.adt")
+lupus <- RunPCA(lupus,  reduction.name = 'pca.adt', reduction.key = 'PCadt_', npcs = 30, assay = "integrated.adt")
+lupus <- RunPCA(lupus,  reduction.name = 'pca.rna', reduction.key = 'PCadt_', npcs = 30, assay = "integrated")
+
+# Now we have prepared the object lupus.RNA for WNN. It contains integrated data on RNA and ADT level.
+lupus@assays
+lupus@reductions
+```
+
+### Elbowplot
+```{r elbowplots and feature plots, warning=FALSE, message=FALSE, fig.height=9, fig.width=16}
+#lupus@reductions
+pdf(paste0(path.out, "01_PCA_Elbowplot.pdf"), height = 9, width = 16)
+ElbowPlot(lupus, reduction = "pca.rna", ndims = 30)
+ElbowPlot(lupus, reduction = "pca.adt", ndims = 30)
+dev.off()
+
+
+#DimHeatmap(lupus, dims = 1:30, cells = 500, balanced = TRUE, nfeatures = 20)
+
+# pbmc <- JackStraw(lupus, num.replicate = 100, assay = "integratedRNA")
+# pbmc <- ScoreJackStraw(lupus, dims = 1:15, )
+# JackStrawPlot(lupus, dims = 1:30)
+```
+
+Based on the Elbowplot, I would use 25 PCs for RNA and 15 for ADT.
+
+### Weighted nearest neighbor UMAP
+```{r data exploration, warning=FALSE, message=FALSE, fig.height=9, fig.width=16, eval=FALSE}
+lupus <- FindMultiModalNeighbors(
+  lupus, reduction.list = list("pca.rna", "pca.adt"), 
+  dims.list = list(1:25, 1:15), modality.weight.name = c("RNA.weight","Protein.weight"))
+
+lupus@neighbors
+lupus@graphs
+
+lupus <- RunUMAP(lupus, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+lupus <- FindClusters(lupus, graph.name = "wsnn", algorithm = 1, resolution = 0.8, verbose = FALSE)
+
+raster_pdf(paste0(path.out, "02_data_exploration.pdf"), height = 9, width = 16, res = 200)
+DimPlot(lupus, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5)
+FeaturePlot(lupus, features = "nFeature_RNA", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+FeaturePlot(lupus, features = "nFeature_Protein", reduction = 'wnn.umap', cols = c("lightgrey","darkblue"))
+dev.off()
+```
+
+# Primary Clustering
+```{r primary clustering, fig.height=9, fig.width=16}
+#define lineage markers
+lineage_markers <- c("CD3D", "CD19", "CD4", "CD8A", "CD14", "FCGR3A", "NCAM1", "HLA-DRA", "IL2RA", "ITGAX", "ITGAM", "IL3RA", "IL7R", "THBD", "C5AR1", "FCER1A", "CD1C") #"CD5", "CD163"
+
+#Run UMAP with lineage markers
+lupus <- RunUMAP(lupus,  features = lineage_markers, assay = "integrated.adt", reduction.name = "umap", reduction.key = "UMAP_")
+
+lupus <- phenograph(x = lupus, pf = lineage_markers, assay.adt = "integrated.adt", k = 50)
+
+raster_pdf(paste0(path.out, "03_primary_clustering.pdf"), height = 9, width = 16, res = 200)
+p1 <- clusterplusfeature(lupus, protein.features = lineage_markers, rna.features = c("FOXP3"), cluster_column = "pheno", dim = "umap", assay.rna = "SCT", assay.adt = "integrated.adt")
+dev.off()
+```
+
+# Primary Merging
+```{r primary merging}
+(merging_table1 <- read_excel(paste0(path.files, "merge_primary2.xlsx")))
+
+# lupus@meta.data$order <- 1:nrow(lupus@meta.data)
+# coldata <- lupus@meta.data[c("order", "flowsom")]
+# coldata <- merge(coldata, merging_table1)
+# coldata <- coldata[order(coldata$order),]
+# 
+# lupus@meta.data$primary <- coldata$primary
+# lupus@meta.data$primary <- factor(lupus@meta.data$primary)
+
+lupus <- merge_clusters(lupus, cluster_column = "pheno", merging_table = merging_table1, merging_name = "primary")
+
+
+raster_pdf(paste0(path.out, "04_primary_merging.pdf"), height = 9, width = 16, res = 200)
+clusterplot <- clusterplusfeature(lupus, protein.features = lineage_markers, cluster_column = "primary", dim = "umap")
+dev.off()
+```
+
+## Save .rds file
+```{r save .rds}
+lupus@meta.data <- lupus@meta.data %>% 
+  separate(hash.ID, into = c("patient_id", "timepoint"), remove = FALSE)
+
+saveRDS(lupus, file = paste0(path.files, "lupus_clustered.rds"))
+```
+

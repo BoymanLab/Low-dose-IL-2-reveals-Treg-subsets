@@ -1,0 +1,671 @@
+---
+title: "Flow_CATALYST"
+author: "docaspar"
+date: "12/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+
+# Libraries
+```{r libs, message=FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(CATALYST)
+library(rstudioapi)
+library(flowCore)
+#library(xlsx)
+library(readxl)
+library(clustree)
+library(diffcyt)
+library(Rphenograph)
+library(edgeR)
+library(MetBrewer)
+library(ggpubr)
+library(pals)
+library(ComplexHeatmap)
+library(cowplot)
+library(rasterpdf)
+```
+
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/20220505_Live"
+path.files <- "../Files/"
+path.out <- "../R_out/Unsupervised_10k_final/"
+
+colvec <- met.brewer("Monet",n=20)[c(4,12,10,18,19)]
+
+source("flow_functions.R")
+```
+
+# Import SCE object
+
+Import SCE object that we saved in the previous chunk.
+```{r load and coldata}
+sce <- readRDS(file = paste0(path.files, "SCE_downsammpled_10k.rds"))
+sce
+ei(sce) %>% head()
+colData(sce)
+```
+
+# Add marker_classes to rowdata
+```{r rowdata}
+primary_markers <- c("CD3", "CD19", "CD14", "CD16", "CD56", "CD4", "CD8", "HLADR", "CD25")
+rowData(sce)[rowData(sce)$marker_name %in% primary_markers, "marker_class"] <- "type"
+rowData(sce)[!rowData(sce)$marker_name %in% primary_markers, "marker_class"] <- "state"
+
+type_markers(sce)
+state_markers(sce)
+```
+
+# Exploratory Data Analysis
+```{r Health check}
+#pdf(paste0(path.out, "0_Data_exploration.pdf"), onefile = TRUE, height = 9, width = 16)
+
+plotCounts(sce,
+    group_by = "sample_id",
+    color_by = "condition")
+
+# plotScatter(sce, c("CD3", "CD19"))
+# plotScatter(sce, c("CD4", "CD8"))
+# plotScatter(sce, c("CD14", "CD16"))
+
+set.seed(1234)
+sce <- runDR(sce, dr = "UMAP", features = "type", cells = 500)
+
+plotDR(sce, "UMAP", color_by = "patient_id")
+plotDR(sce, "UMAP", color_by = c(type_markers(sce), state_markers(sce)), ncol = round(sqrt(16*length(c(type_markers(sce), state_markers(sce)))/9)))
+#dev.off()
+```
+
+# Primary 
+## flowsom clustering
+Here, we perform the primary clustering and dimensionality reduction (UMAP).
+```{r primary clustering}
+type_markers(sce) #will be used for clustering
+state_markers(sce) # will not be used for clustering
+
+set.seed(1234)
+kinit <- 30 #try 10 or 20
+sce <- cluster(sce, features = type_markers(sce),
+    xdim = 10, ydim = 10, maxK = kinit)
+
+#pdf(paste0(path.out, "1_Primary_clustering.pdf"), onefile = TRUE, height = 9, width = 16)
+
+clustree(cluster_codes(sce), prefix = "meta")
+
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = paste0("meta", kinit),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+#plotClusterExprs(sce, k = paste0("meta", kinit), features = "type") + labs(title = "primary clustering marker expression histogram")
+
+plotDR(sce, "UMAP", color_by = paste0("meta", kinit)) +
+  theme_cowplot()
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)), assay = "exprs")+
+  theme_cowplot()+ 
+  theme(strip.background = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+  
+#dev.off()
+
+code <- cluster_codes(sce)[,c("som100", paste0("meta", kinit))]
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+```
+
+
+
+## Merge primary clustering
+Label and merge clusters. 
+```{r merge primary clusters}
+(merging_table <- read_excel(paste0(path.files, "merged_clusters_primary2.xlsx")))
+                            
+sce <- mergeClusters(sce, k = paste0("meta", kinit), table = merging_table, id = "primary", overwrite = TRUE)
+
+code <- cluster_codes(sce)[,c("som100", "primary")]
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+
+#pdf(paste0(path.out, "2_Primary_merging.pdf"), onefile = TRUE, height = 9, width = 16)
+plotDR(sce, "UMAP", color_by = "primary") +
+  scale_color_brewer(palette = "Paired")+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)))+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+raster_pdf(filename = paste0(path.out, "2a_Primary_merging.pdf"), height = 9, width = 11, res = 200)
+plotDR(sce, "UMAP", color_by = "primary") +
+  scale_color_brewer(palette = "Paired")+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+
+plot_DR(x = sce, color_by = "primary", add_labels = TRUE)+
+  theme_cowplot()
+dev.off()
+
+#raster_pdf(filename = paste0(path.out, "2b_Primary_merging.pdf"), height = 5, width = 11, res = 200)
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = 5)+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "2b_Primary_merging_long.pdf"), height = 9, width = 10, res = 200)
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = 3)+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+```
+
+
+# Secondary
+## filter, change markers & run UMAP
+```{r filter for secondary clustering}
+scecd4 <- sce[,colData(sce)$primary == "CD4 T cells"]
+
+cd4_markers <- c("CD127", "CD25", "Foxp3")
+rowData(scecd4)[rowData(scecd4)$marker_name %in% cd4_markers, "marker_class"] <- "type"
+rowData(scecd4)[!rowData(scecd4)$marker_name %in% cd4_markers, "marker_class"] <- "state"
+
+type_markers(scecd4)
+
+set.seed(1234)
+scecd4 <- runDR(scecd4, dr = "UMAP", features = "type", cells = 500)
+plotDR(scecd4, "UMAP", color_by = type_markers(scecd4), ncol = 3, assay = "exprs")+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+
+```
+
+
+## Secondary clustering
+```{r secondary clustering}
+set.seed(1234)
+kinit <- 15 #try 10 or 20
+scecd4 <- cluster(scecd4, features = type_markers(scecd4),
+    xdim = 10, ydim = 10, maxK = kinit)
+
+#pdf(paste0(path.out, "3_Secondary_clustering.pdf"), onefile = TRUE, height = 9, width = 16)
+
+clustree(cluster_codes(scecd4), prefix = "meta")
+
+plotExprHeatmap(scecd4, features = "type",
+    by = "cluster_id", k = paste0("meta", kinit),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+#plotClusterExprs(scecd4, k = paste0("meta", kinit), features = "type") + labs(title = "primary clustering marker expression histogram")
+
+plotDR(scecd4, "UMAP", color_by = paste0("meta", kinit))+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+plotDR(scecd4, "UMAP", color_by = type_markers(scecd4), ncol = 3, assay = "exprs")+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+
+# time.start <- Sys.time()
+# 
+# set.seed(1234)
+# phenoresults <- Rphenograph(t(assay(filterSCE(scecd4, marker_class == "type"), "exprs")), k = 200)
+# 
+# #Add phenograph cluster_ids to scecd4 object
+# colData(scecd4)$pheno <- as.factor(membership(phenoresults[[2]]))
+# scecd4$cluster_id <- as.factor(membership(phenoresults[[2]]))
+# metadata(scecd4)$cluster_codes <- data.frame(
+#     custom = factor(levels(as.factor(membership(phenoresults[[2]]))), levels = levels(as.factor(membership(phenoresults[[2]])))))
+# 
+# pdf(paste0(path.out, "3_Secondar_clustering_k100 .pdf"), onefile = TRUE, height = 9, width = 16)
+# plotExprHeatmap(scecd4, features = "type",
+#     by = "cluster_id", k = "custom",
+#     scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+# 
+# plotDR(scecd4, "UMAP", color_by = "custom")
+# plotDR(scecd4, "UMAP", color_by = type_markers(scecd4), ncol = 3, assay = "exprs")
+# dev.off()
+# 
+# time.finish <- Sys.time()
+# time.finish - time.start
+```
+
+
+## Cluster merging
+```{r merge secondary cluster}
+(merging_table_secondary <- read_excel(paste0(path.files, "merged_clusters_cd4_v4.xlsx")))
+
+scecd4 <- mergeClusters(scecd4, k = "meta15", table = merging_table_secondary, id = "secondary")
+
+code <- cluster_codes(scecd4)[,c("som100", "meta15", "secondary")]
+coldata <- as.data.frame(colData(scecd4))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(scecd4) <- DataFrame(coldata[order(coldata$cell_id),])
+
+#pdf(paste0(path.out, "04_Secondary_merging.pdf"), onefile = TRUE, height = 9, width = 16)
+plotDR(scecd4, "UMAP", color_by = "secondary") +scale_color_brewer(palette = "Paired")+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+plotDR(scecd4, "UMAP", color_by = type_markers(scecd4), ncol = 3)+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "04a_Secondary_merging.pdf"), height = 9, width = 11, res = 200)
+plotDR(scecd4, "UMAP", color_by = "secondary") +scale_color_brewer(palette = "Paired")+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "04b_Secondary_merging.pdf"), height = 9, width = 11, res = 200)
+plotDR(scecd4, "UMAP", color_by = type_markers(scecd4), ncol = 2)+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+```
+
+# Feed back subclustering
+Feed back subclustering into main SCE object
+```{r feed back subclustering}
+coldata.sce <- colData(sce)
+coldata.cd4 <- colData(scecd4)
+coldata <- merge(coldata.sce, coldata.cd4[,c("cell_id", "secondary")], by = "cell_id", all = TRUE)
+coldata$primary <- as.character(coldata$primary)
+coldata$secondary <- as.character(coldata$secondary)
+coldata[is.na(coldata$secondary), "secondary"] <- coldata[is.na(coldata$secondary), "primary"]
+coldata$secondary <- as.factor(coldata$secondary)
+
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+
+#pdf(paste0(path.out, "5_Feeding_back_subclusters.pdf"), onefile = TRUE, height = 9, width = 16)
+plotDR(sce, "UMAP", color_by = "secondary") +scale_color_manual(values = unname(cols25()))+
+  theme_cowplot()+
+  theme(axis.ticks = element_blank(), 
+        axis.text = element_blank())
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)))+
+  theme_cowplot()+
+  theme(strip.background = element_blank(),
+        axis.ticks = element_blank(), 
+        axis.text = element_blank())
+#dev.off()
+```
+
+
+## DA visualisation
+```{r DA}
+dtp <- colData(sce)[c("secondary", "sample_id")] %>% 
+  table() %>% 
+  as.data.frame() %>%
+  mutate("copy" = sample_id) %>%
+  separate(copy, c("patient_id", "condition")) %>%
+  dplyr::rename("counts" = Freq)
+
+totdtp <- colData(sce)[c("sample_id")] %>% table() %>% data.frame() %>% dplyr::rename("sample_id" = Var1, "totcounts" = Freq) #counts per sample to normalize counts by sample size. irrelevant in this case, since all samples have the same samplesize.
+dtp <- merge(dtp, totdtp) %>% mutate("Freq" = counts/totcounts*100)
+
+
+#pdf(paste0(path.out, "6_Cluster_Abundance.pdf"), height = 9, width = 16)
+
+comparisons <- list(c("V2", "V3"), c("V8", "V9"), c("V2", "V9"))
+ggplot(dtp, aes(x = condition, y = Freq, col = condition))+
+  geom_violin(aes(fill = condition), alpha = 0.5, draw_quantiles = 0.5)+
+  #geom_jitter(width = 0.1)+
+  geom_point()+
+  geom_line(aes(group = patient_id), col = "grey")+
+  facet_wrap("secondary", scales = "free_y")+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Cluster Abundance per Time point", y = "Frequency of PBMCs (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+
+#dev.off()
+
+dtp[dtp$secondary == "CD19 B cells" & dtp$condition %in% c("V2", "V9"), c("patient_id", "condition", "Freq")]
+```
+
+# Stacked bar plot
+Create stacked bar plot from cell type frequencies.
+```{r, fig.width=16}
+cur_df <- dtp %>%
+  dplyr::filter(condition != "H") %>%
+  dplyr::select(sample_id, secondary, Freq) %>%
+  spread(key = secondary, value = Freq)
+
+matrixrownames <- cur_df$sample_id 
+
+# now we create a matrix from the data and cluster the data based on the cell fractions
+hm_dat = as.matrix(cur_df[,-1])
+rownames(hm_dat) <- as.character(matrixrownames)
+
+# calculate distance and then cluster samples on cluster fraction
+dd <- dist((hm_dat))
+hc <- hclust(dd, method = "ward.D2")
+row_sorted <- hc$labels
+
+# now we generate the clinical metadata and order it in the same way as the celltype data
+mmd <- cur_df %>% 
+  dplyr::select(sample_id) %>%
+  dplyr::mutate("copy" = sample_id) %>%
+  separate(copy, into = c("patient_id", "timepoint"), sep = "_") %>%
+  as.matrix() %>%
+  .[order(.[,"sample_id"], decreasing = TRUE),]
+  
+rownames(mmd) <- matrixrownames
+### mmd <- data.frame(mmd[row_sorted,])
+mmd <- data.frame(mmd)
+
+# generate the barplot. this is generated as the annotation for the heatmap of the Patient_ID that is generated below.
+### hm_dat <- hm_dat[row_sorted,]
+#hm_dat <- hm_dat / hm_dat %>% rowSums()
+
+# bring cell types in order (column order)
+# col_order <- c("basophils", "eosinophils", "monocytes", "lymphocytes", "neutrophils")
+# hm_dat <- hm_dat[, col_order]
+
+
+
+colvec_patient_id <- structure(brewer.paired(mmd$patient_id %>% unique() %>% length()), names = mmd$patient_id %>% unique())
+colvec_fill <- structure(unname(cols25(n = ncol(hm_dat))), names = colnames(hm_dat))
+colvec_fill <- structure(met.brewer("Signac", n = ncol(hm_dat)), names = colnames(hm_dat))
+
+# create annotation with cell type proportions
+ha <- rowAnnotation(`Patient ID` = mmd$patient_id,
+                    `Cell Type Proportion` =
+                      anno_barplot(hm_dat, 
+                                   gp=gpar(fill = colvec_fill),
+                                   bar_width = 1,
+                                   height = unit(25,"cm"),
+                                   width = unit(11,"cm"),
+                                   show_row_names = FALSE),
+                        col = list(`Patient ID` = colvec_patient_id),
+                    show_legend = FALSE)
+
+
+dend <- as.dendrogram(hc)
+#dend <- color_branches(dend, k = 4, col = c("gray50", "blue", "green", "red"), groupLabels = TRUE) # `color_branches()` returns a dendrogram object
+
+# heatmap consisting of the patient_IDs. one color per patient
+h1 <- Heatmap(mmd$timepoint, 
+             col = colvec[2:5], 
+             width = unit(0.5, "cm"), 
+             #cluster_rows = dend,
+             #row_dend_width = unit(1, "cm"),
+             height = unit(25, "cm"),
+             show_heatmap_legend = FALSE, 
+             heatmap_legend_param = list(title = "Time point"),
+             row_names_gp = gpar(cex=3),
+             show_row_names = TRUE,
+             right_annotation =  ha,
+             column_labels = "Time point")
+
+# plot the data
+#pdf(paste0(path.out, "stacked_barplot_unclust.pdf"), height = 9, width = 16)
+ht = grid.grabExpr(draw(h1))
+grid.newpage()
+pushViewport(viewport(angle = 270))
+grid.draw(ht)
+#dev.off()
+
+#pdf(paste0(path.out, "stacked_barplot_legend_unclust.pdf"), height = 9, width = 16)
+
+lgd1 <- Legend(labels = paste0("V", c(2,3,8,9)),
+               title = "Time point",
+               legend_gp = gpar(fill = colvec[2:5]),
+               ncol = 1)
+
+
+lgd2 <- Legend(labels = mmd$patient_id %>% unique(),
+               title = "Patient ID",
+               legend_gp = gpar(fill = brewer.paired(mmd$patient_id %>% unique() %>% length())),
+               ncol = 1)
+
+lgd3 <- Legend(labels = colnames(hm_dat),
+               title = "Cell type",
+               legend_gp = gpar(fill = met.brewer("Signac", n = ncol(hm_dat))),
+               ncol = 1)
+
+pd <- packLegend(lgd1, lgd2, lgd3, direction = "vertical", column_gap = unit(0.5, "cm"))
+
+draw(pd)
+#dev.off()
+```
+
+
+## Differential state analysis
+Combining the expression data frame with the coldata gives arcsine transformed values. could take non-transformed values (i.e. "counts" assay) to get more familiar results.
+```{r DS}
+mfidf <- cbind(assay(sce, "exprs") %>% t() %>% as.data.frame(), colData(sce) %>% as.data.frame()) %>% dplyr::select(rownames(sce), "sample_id", "secondary")
+mfidfga <- mfidf %>% 
+  dplyr::group_by(sample_id, secondary) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE) %>%
+  separate(sample_id, c("patient_id", "condition")) %>%
+  gather(key = "marker", value = "mfi", rownames(sce))
+mfidfga$condition <- mfidfga$condition %>% factor(levels = c("H", "V2", "V3", "V8", "V9"))
+
+pdf(paste0(path.out, "7_Marker_Expression.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+ggplot(mfidfga, aes(x = secondary, y = mfi, col = condition, fill = condition))+
+    geom_boxplot(alpha = 0.5)+
+    geom_point(position = position_dodge(width = 0.75))+
+    #geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("marker", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = "Marker Expression on PBMCs", y = "MFI")+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank(),
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+    scale_color_manual(values = colvec)+
+    scale_fill_manual(values = colvec)+
+    #stat_compare_means(comparisons = list(c("MORNING", "EVENING")), method = "t.test", paired = TRUE)+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+for(mrkr in unique(mfidfga$marker)){
+  p1 <- ggplot(mfidfga %>% dplyr::filter(marker == mrkr), aes(x = condition, y = mfi, col = condition, fill = condition))+
+    geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+    geom_point()+
+    geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("secondary", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = paste0(mrkr, " MFI per cluster"), y = paste0("MFI (", mrkr, ")"))+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())+
+    scale_color_manual(values = colvec)+
+    scale_fill_manual(values = colvec)+
+    stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+ #CD4 Temra are not present in all samples, so the paired testing will fail there. still did the testing paired.
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+    print(p1)
+}
+dev.off()
+```
+
+
+# CD4 T cells Abundance and stacked bar plot
+```{r, fig.width=16}
+scecd4 <- sce[,colData(sce)$primary == "CD4 T cells"]
+colData(scecd4)$secondary <- colData(scecd4)$secondary %>% droplevels()
+
+
+dtp <- colData(scecd4)[c("secondary", "sample_id")] %>% 
+  table() %>% 
+  as.data.frame() %>%
+  mutate("copy" = sample_id) %>%
+  separate(copy, c("patient_id", "condition")) %>%
+  dplyr::rename("counts" = Freq)
+
+totdtp <- colData(scecd4)[c("sample_id")] %>% table() %>% data.frame() %>% dplyr::rename("sample_id" = Var1, "totcounts" = Freq) #counts per sample to normalize counts by sample size. irrelevant in this case, since all samples have the same samplesize.
+dtp <- merge(dtp, totdtp) %>% mutate("Freq" = counts/totcounts*100)
+
+
+pdf(paste0(path.out, "6.2_Cluster_Abundance_of_CD4.pdf"), height = 9, width = 16)
+
+comparisons <- list(c("V2", "V3"), c("V8", "V9"), c("V2", "V9"))
+ggplot(dtp, aes(x = condition, y = Freq, col = condition))+
+  geom_violin(aes(fill = condition), alpha = 0.5, draw_quantiles = 0.5)+
+  #geom_jitter(width = 0.1)+
+  geom_point()+
+  geom_line(aes(group = patient_id), col = "grey")+
+  facet_wrap("secondary", scales = "free_y")+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Cluster Abundance per Time point", y = "Frequency of PBMCs (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+
+dev.off()
+
+cur_df <- dtp %>%
+  dplyr::filter(condition != "H") %>%
+  dplyr::select(sample_id, secondary, Freq) %>%
+  spread(key = secondary, value = Freq)
+
+matrixrownames <- cur_df$sample_id 
+
+# now we create a matrix from the data and cluster the data based on the cell fractions
+hm_dat = as.matrix(cur_df[,-1])
+rownames(hm_dat) <- as.character(matrixrownames)
+
+# calculate distance and then cluster samples on cluster fraction
+dd <- dist((hm_dat))
+hc <- hclust(dd, method = "ward.D2")
+row_sorted <- hc$labels
+
+# now we generate the clinical metadata and order it in the same way as the celltype data
+mmd <- cur_df %>% 
+  dplyr::select(sample_id) %>%
+  dplyr::mutate("copy" = sample_id) %>%
+  separate(copy, into = c("patient_id", "timepoint"), sep = "_") %>%
+  as.matrix()
+  
+rownames(mmd) <- matrixrownames
+mmd <- data.frame(mmd[row_sorted,])
+
+# generate the barplot. this is generated as the annotation for the heatmap of the Patient_ID that is generated below.
+hm_dat <- hm_dat[row_sorted,]
+#hm_dat <- hm_dat / hm_dat %>% rowSums()
+
+# bring cell types in order (column order)
+# col_order <- c("basophils", "eosinophils", "monocytes", "lymphocytes", "neutrophils")
+# hm_dat <- hm_dat[, col_order]
+
+
+
+colvec_patient_id <- structure(brewer.paired(mmd$patient_id %>% unique() %>% length()), names = mmd$patient_id %>% unique())
+colvec_fill <- structure(unname(cols25(n = ncol(hm_dat))), names = colnames(hm_dat))
+colvec_fill <- structure(met.brewer("Signac", n = ncol(hm_dat)), names = colnames(hm_dat))
+
+# create annotation with cell type proportions
+ha <- rowAnnotation(`Patient ID` = mmd$patient_id,
+                    `Cell Type Proportion` =
+                      anno_barplot(hm_dat, 
+                                   gp=gpar(fill = colvec_fill),
+                                   bar_width = 1,
+                                   height = unit(25,"cm"),
+                                   width = unit(11,"cm"),
+                                   show_row_names = FALSE),
+                        col = list(`Patient ID` = colvec_patient_id),
+                    show_legend = FALSE)
+
+
+dend <- as.dendrogram(hc)
+#dend <- color_branches(dend, k = 4, col = c("gray50", "blue", "green", "red"), groupLabels = TRUE) # `color_branches()` returns a dendrogram object
+
+# heatmap consisting of the patient_IDs. one color per patient
+h1 <- Heatmap(mmd$timepoint, 
+             col = colvec[2:5], 
+             width = unit(0.5, "cm"), 
+             cluster_rows = dend,
+             row_dend_width = unit(1, "cm"),
+             height = unit(25, "cm"),
+             show_heatmap_legend = FALSE, 
+             heatmap_legend_param = list(title = "Time point"),
+             row_names_gp = gpar(cex=3),
+             show_row_names = TRUE,
+             right_annotation =  ha,
+             column_labels = "Time point")
+
+# plot the data
+pdf(paste0(path.out, "stacked_barplot_CD4.pdf"), height = 9, width = 16)
+ht = grid.grabExpr(draw(h1))
+grid.newpage()
+pushViewport(viewport(angle = 270))
+grid.draw(ht)
+dev.off()
+pdf(paste0(path.out, "stacked_barplot_CD4_legend.pdf"), height = 9, width = 16)
+
+lgd1 <- Legend(labels = paste0("V", c(2,3,8,9)),
+               title = "Time point",
+               legend_gp = gpar(fill = colvec[2:5]),
+               ncol = 1)
+
+
+lgd2 <- Legend(labels = mmd$patient_id %>% unique(),
+               title = "Patient ID",
+               legend_gp = gpar(fill = brewer.paired(mmd$patient_id %>% unique() %>% length())),
+               ncol = 1)
+
+lgd3 <- Legend(labels = colnames(hm_dat),
+               title = "Cell type",
+               legend_gp = gpar(fill = met.brewer("Signac", n = ncol(hm_dat))),
+               ncol = 1)
+
+pd <- packLegend(lgd1, lgd2, lgd3, direction = "vertical", column_gap = unit(0.5, "cm"))
+
+draw(pd)
+dev.off()
+```
+
+# Save SCE object
+```{r save RDS}
+saveRDS(object = sce, file = paste0(path.files, "SCE_downsammpled_subclustered_10k_2xflowsom.rds"))
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```
+

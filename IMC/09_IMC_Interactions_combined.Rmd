@@ -1,0 +1,302 @@
+---
+title: "08_IMC_Interactions"
+author: "docaspar"
+date: "10/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, fig.width = 16, fig.height = 9)
+```
+
+```{r libs}
+library(SingleCellExperiment)
+library(tidyverse)
+library(CATALYST)
+library(scater)
+library(imcRtools)
+library(ggplot2)
+library(ggraph)
+library(rstudioapi)
+library(RColorBrewer)
+library(MetBrewer)
+library(pals)
+library(pheatmap)
+library(xlsx)
+library(rstatix)
+library(ggpubr)
+library(cowplot)
+```
+
+
+
+```{r set paths}
+rm(list = ls())
+setwd(dirname(getActiveDocumentContext()$path))
+
+
+path.files <- "../R_Files/cpout_combined/"
+path.out <- "../R_out/cpout_combined/"
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+colvec_ct <- met.brewer("Signac", 19)[c(6, 4, 3, 1, 8, 10, 13, 16:19)]
+names(colvec_ct) <- ct
+
+
+# ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDC1", "cDC2", "cDC3", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+# colvec_ct <- met.brewer("Signac", 19)[c(6, 4, 3, 1, 8, 10, 11, 12, 13, 16:19)]
+# names(colvec_ct) <- ct
+
+colvec_tp <- met.brewer("Monet",n=20)[c(12,18)]
+```
+
+# Import data
+Build the combined spe from the files created in the chunk above and import the combined sce object created in "06_IMC_Quantification_combined.Rmd".
+```{r}
+sce <- readRDS(file = paste0(path.files, "sce_3pix2_batch2_subclustered_combined.rds"))
+spe <- readRDS(file = paste0(path.files, "spe_3pix2_batch2_combined.rds"))
+
+spef <- spe[,colData(spe)$primary_clustering %in% c("APCs", "Tcells", "Endothel")]
+```
+
+
+```{r}
+pdf(paste0(path.out, "07 NeighborhoodMap_leukocytes_endothelium.pdf"), onefile = TRUE, height = 10, width = 11)
+
+
+plotSpatial(spef,
+            img_id = "sample_id",
+            node_color_by = "subclusters",
+            node_shape_by = "Timepoint",
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE) + theme(plot.title = element_text(hjust = 0.5))+
+          scale_color_manual(values = colvec_ct[ct[ct %in% c(colData(spef)$subclusters %>% unique())]])
+
+for(img_nr in colData(spef)$sample_id %>% unique()){
+  p1 <- plotSpatial(spef[,colData(spef)$sample_id == img_nr],
+            img_id = "sample_id",
+            node_color_by = "subclusters",
+            node_shape_by = "Timepoint",
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE,
+            node_size_fix = 3) + theme(plot.title = element_text(hjust = 0.5))+
+          scale_color_manual(values = colvec_ct[ct[ct %in% c(colData(spef)$subclusters %>% unique())]])
+  print(p1)
+}
+dev.off()
+```
+
+
+```{r, fig.height=10, fig.width=10}
+pdf(paste0(path.out, "08 NeighborhoodMap_all.pdf"), onefile = TRUE, height = 10, width = 10)
+p0 <- plotSpatial(spe,
+            img_id = "sample_id",
+            node_color_by = "subclusters",
+            node_shape_by = NULL,
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE, ncols = 5) + 
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank(),
+        legend.key = element_blank())+
+  scale_color_manual(values = colvec_ct)
+
+p0
+
+cowplot::get_legend(p0) %>% plot_grid()
+
+for(img_nr in colData(spe)$sample_id %>% unique()){
+  p1 <- plotSpatial(spe[,colData(spe)$sample_id == paste(img_nr)],
+            img_id = "sample_id",
+            node_size_fix = 3,
+            node_color_by = "subclusters",
+            node_shape_by = NULL,
+            draw_edges = FALSE,
+            colPairName = "neighborhood",
+            directed = FALSE) + 
+          theme(plot.title = element_text(hjust = 0.5),
+                legend.position = "none")+
+          scale_color_manual(values = colvec_ct)
+
+  p2 <- plotSpatial(spe[,colData(spe)$sample_id == paste(img_nr)],
+            img_id = "sample_id",
+            node_size_fix = 3,
+            node_color_by = "subclusters",
+            node_shape_by = NULL,
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE, edge_width_fix = 1) + 
+          theme(plot.title = element_text(hjust = 0.5),
+                legend.position = "none")+
+          scale_color_manual(values = colvec_ct)
+
+  p3 <- plotSpatial(spe[,colData(spe)$sample_id == paste(img_nr)],
+            img_id = "sample_id",
+            node_size_fix = 3,
+            node_color_fix = "grey",
+            node_shape_by = NULL,
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE, 
+            edge_color_fix = "red") + 
+          theme(plot.title = element_text(hjust = 0.5),
+                legend.position = "none")
+
+  print(p1)
+  print(p2)
+  print(p3)
+}
+dev.off()
+
+```
+
+```{r}
+spe <- aggregateNeighbors(spe,
+                                  colPairName = "neighborhood",
+                                  aggregate_by = "metadata",
+                                  count_by = "subclusters")
+head(spe$aggregatedNeighbors)
+
+spe <- aggregateNeighbors(spe,
+                                  colPairName = "neighborhood",
+                                  aggregate_by = "expression",
+                                  assay_type =  "counts")
+head(spe$mean_aggregatedExpression)
+
+?aggregateNeighbors
+```
+
+
+
+```{r}
+cur_cluster <- kmeans(spe$aggregatedNeighbors, centers = 3)
+spe$clustered_neighbors <- factor(cur_cluster$cluster)
+plotSpatial(spe[,spe@colData$primary_clustering %in% c("APCs", "Tcells") & spe@colData$sample_id == "1"],
+            img_id = "sample_id",
+            node_color_by = "subclusters",
+            node_size_fix = 2,
+            edge_width_fix = 1,
+            edge_color_by = "clustered_neighbors",
+            node_shape_by = "Timepoint",
+            draw_edges = TRUE,
+            colPairName = "neighborhood",
+            directed = FALSE,
+            nodes_first = FALSE) + theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r eval=FALSE}
+# colData(spe)$subclusters %>% unique()
+# out <- countInteractions(spe[,spe@colData$primary_clustering %in% c("APCs", "Tcells", "Endothelium")],
+#                          group_by = "Timepoint",
+#                          label = "subclusters",
+#                          method = "classic",
+#                          colPairName = "neighborhood")
+# as.data.frame(out)
+
+out <- testInteractions(spe[,spe@colData$primary_clustering %in% c("APCs", "Tcells", "Endothelium")],
+                        group_by = "Timepoint",
+                        label = "subclusters",
+                        method = "classic",
+                        colPairName = "neighborhood")
+out
+as.data.frame(out[out$sig == TRUE,])
+int_bf <- out %>% as.data.frame() %>% dplyr::filter(group_by == "Before") %>% mutate("log10p" = -log10(p) * sigval) %>% dplyr::select(from_label, to_label, log10p)
+int_af <- out %>% as.data.frame() %>% dplyr::filter(group_by == "After") %>% mutate("log10p" = -log10(p) * sigval) %>% dplyr::select(from_label, to_label, log10p)
+int_bf %>% tidyr::spread(key = to_label, value = log10p) %>% column_to_rownames("from_label") %>% as.matrix() %>% pheatmap(cluster_rows = FALSE, cluster_cols = FALSE)
+int_af %>% tidyr::spread(key = to_label, value = log10p) %>% column_to_rownames("from_label") %>% as.matrix() %>% pheatmap(cluster_rows = FALSE, cluster_cols = FALSE)
+
+## Interaction Heatmap
+```
+
+
+
+```{r}
+interaction.counts <- countInteractions(spe[,!colData(spe)$subclusters %in% c("Fibroblasts", "SmoothMuscleCells", "Epidermis")],
+                         group_by = "sample_id",
+                         label = "subclusters",
+                         method = "classic",
+                         colPairName = "neighborhood")
+
+
+int <- interaction.counts %>% as.data.frame() %>% na.omit()
+int$timepoint <- "Before"
+int[int$group_by %in% c(colData(spe)[colData(spe)$Timepoint == "After", "sample_id"] %>% unique()), "timepoint"] <- "After"
+int$timepoint <- factor(int$timepoint, levels = c("Before", "After"))
+int
+
+write.xlsx(int %>% dplyr::filter(from_label == "Tregs"), paste0(path.out, "09a IMC Interactions from Tregs.xlsx"), row.names = FALSE)
+write.xlsx(int %>% dplyr::filter(to_label == "Endothelium"), paste0(path.out, "09b IMC Interactions to Endothelium.xlsx"), row.names = FALSE)
+write.xlsx(int %>% dplyr::filter(to_label == "Endothelium"), paste0(path.out, "09c IMC Interactions all.xlsx"), row.names = FALSE)
+
+stat.test <- int %>%
+  group_by(to_label, from_label) %>%
+  t_test(ct ~ timepoint) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance("p.adj")
+stat.test
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "to_label", dodge = 0.75)
+
+pdf(paste0(path.out, "09d IMC Interactions.pdf"), height = 9, width = 16)
+ggplot(int, aes(x = to_label, y = ct))+
+  geom_boxplot(aes(col = timepoint, fill = timepoint), alpha = 0.5)+
+  geom_point(aes(col = timepoint), position = position_dodge(width = 0.75))+
+  facet_wrap("from_label", scales = "free_y")+
+  theme_bw()+
+  theme(strip.background = element_blank())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  scale_fill_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  labs(x = "Interaction partner", y = "Average #Interactions", color = "Timepoint", fill = "Timepoint", title = "Cell-Cell Interactions in SLE Skin Biopsies")
+
+ggplot(int, aes(x = to_label, y = ct))+
+  geom_boxplot(aes(col = timepoint, fill = timepoint), alpha = 0.5)+
+  geom_point(aes(col = timepoint), position = position_dodge(width = 0.75))+
+  facet_wrap("from_label", scales = "free_y")+
+  theme_bw()+
+  theme(strip.background = element_blank())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  scale_fill_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  labs(x = "Interaction partner", y = "Average #Interactions", color = "Timepoint", fill = "Timepoint", title = "Cell-Cell Interactions in SLE Skin Biopsies")+
+  stat_pvalue_manual(stat.test,  label = "p.adj", tip.length = 0.02)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.11)))
+
+ggplot(int, aes(x = to_label, y = ct))+
+  geom_boxplot(aes(col = timepoint, fill = timepoint), alpha = 0.5)+
+  geom_point(aes(col = timepoint), position = position_dodge(width = 0.75))+
+  facet_wrap("from_label", scales = "free_y")+
+  theme_bw()+
+  theme(strip.background = element_blank())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), plot.title = element_text(hjust = 0.5))+
+  scale_color_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  scale_fill_manual(values = met.brewer("Monet",n=20)[c(12,18)])+
+  labs(x = "Interaction partner", y = "Average #Interactions", color = "Timepoint", fill = "Timepoint", title = "Cell-Cell Interactions in SLE Skin Biopsies")+
+  stat_pvalue_manual(stat.test,  label = "p", tip.length = 0.02)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.11)))
+
+
+dev.off()
+
+# interaction.tests <- testInteractions(spe[,!colData(spe)$subclusters %in% c("Fibroblasts", "SmoothMuscleCells", "Epidermis")],
+#                         group_by = "sample_id",
+#                         label = "subclusters",
+#                         method = "classic",
+#                         colPairName = "neighborhood")
+# 
+# interaction.tests %>% na.omit() %>% .[.$sig == TRUE,] %>% as.data.frame() %>% .[order(.$p),]
+```
+# Session Info
+```{r session Info}
+sessionInfo()
+```
+
+
+
+
+

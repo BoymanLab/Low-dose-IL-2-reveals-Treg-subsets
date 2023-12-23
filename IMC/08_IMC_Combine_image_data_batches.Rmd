@@ -1,0 +1,99 @@
+---
+title: "08_IMC_Interactions"
+author: "docaspar"
+date: "10/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, fig.width = 16, fig.height = 9, root.dir = ".")
+```
+
+```{r libs}
+library(SingleCellExperiment)
+library(tidyverse)
+library(CATALYST)
+library(scater)
+library(imcRtools)
+library(ggplot2)
+library(ggraph)
+library(RColorBrewer)
+library(MetBrewer)
+library(pals)
+```
+
+
+# Set paths
+```{r set paths}
+rm(list = ls())
+
+path.data.3pix2 <- "../Data/cpout_3pix2/"
+path.data.batch2 <- "../Data/cpout_batch2/"
+path.files.3pix2 <- "../R_Files/cpout_3pix2/"
+path.files.batch2 <- "../R_Files/cpout_batch2/"
+path.files.combined <- "../R_Files/cpout_combined/"
+path.out <- "../R_out/cpout_combined/"
+```
+
+# Combine batches to one SPE object
+```{r write spe files}
+object_file = "cell.csv"
+image_file = "Image.csv"
+panel_file = "panel.csv"
+graph_file = "Object relationships.csv"
+object_feature_file = "var_cell.csv"
+
+
+object1 <- read_csv(paste0(path.data.3pix2, object_file))
+object2 <- read_csv(paste0(path.data.batch2, object_file))
+object2$ImageNumber <- object2$ImageNumber + 17
+write.csv( x= rbind(object1, object2), file = paste0(path.files.combined, object_file), row.names = FALSE)
+
+image1 <- read_csv(paste0(path.data.3pix2, image_file))
+image2 <- read_csv(paste0(path.data.batch2, image_file))
+image2$ImageNumber <- image2$ImageNumber + 17
+write.csv( x= rbind(image1, image2), file = paste0(path.files.combined, image_file), row.names = FALSE)
+
+graph1 <- read_csv(paste0(path.data.3pix2, graph_file))
+graph2 <- read_csv(paste0(path.data.batch2, graph_file))
+graph2$`First Image Number` <- graph2$`First Image Number` + 17
+graph2$`Second Image Number` <- graph2$`Second Image Number` + 17
+write.csv( x= rbind(graph1, graph2), file = paste0(path.files.combined, graph_file), row.names = FALSE)
+
+spe <- read_cpout(path.files.combined)
+```
+
+# Tidy SPE object
+Add information of SCE object to newly created SPE object.
+```{r tidy data}
+sce <- readRDS(file = paste0(path.files.combined, "sce_3pix2_batch2_subclustered_combined.rds"))
+
+#prep spe
+coldata_spe <- colData(spe) %>% as.data.frame()
+coldata_spe <- coldata_spe %>% 
+  mutate("copy" = str_replace(Metadata_description, "Lupus_", "")) %>%
+  separate(copy, c("id", "Timepoint", "ROI")) %>% 
+  dplyr::select(- c(id, ROI)) %>% 
+  mutate("cell_id" = paste("cell", sample_id, ObjectNumber, sep = "_")) %>%
+  mutate("sample_id_numeric" = as.numeric(sample_id))
+
+#prep sce
+coldata_sce <- as.data.frame(colData(sce)) %>% dplyr::select(c(cellID, primary_clustering, subclusters))
+coldata_sce$subclusters %>% table()
+
+#merge
+coldata_merged <- merge(coldata_spe, coldata_sce, by.x = "cell_id", by.y = "cellID")
+coldata_merged[order(coldata_merged$sample_id_numeric, coldata_merged$ObjectNumber),]
+colData(spe) <- DataFrame(coldata_merged[order(coldata_merged$sample_id_numeric, coldata_merged$ObjectNumber),])
+colData(spe)
+
+saveRDS(spe, file = paste0(path.files.combined, "spe_3pix2_batch2_combined.rds"))
+```
+
+# Session Info
+```{r session Info}
+sessionInfo()
+```
+
+
+

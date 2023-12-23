@@ -1,0 +1,103 @@
+---
+title: "celltype_classification_new_classifier"
+author: "Tobias Hoch"
+date: "2020-07-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+# Preparations
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, message= FALSE, root.dir = ".")
+```
+
+# Libraries
+
+```{r libs}
+library(tidyverse)
+library(SingleCellExperiment)
+library(cytomapper)
+library(stringr)
+library(CATALYST)
+library(readxl)
+```
+
+# Setup
+```{r paths}
+#Clear R's memory
+rm(list=ls())
+
+path.data <- "../Data/cpout_combined/"
+path.files <- "../R_Files/cpout_combined/"
+
+sce <- readRDS(file = paste0(path.files.combined, "sce_3pix2_batch2_subclustered_combined.rds"))
+```
+
+# Read the data, masks and pixel information (IMC images)
+```{r load images}
+image_mat <- as.data.frame(read.csv(file = paste0(path.files, "Image.csv"), stringsAsFactors = FALSE))
+
+all_mask <- loadImages(x = paste0(path.data, "masks/", image_mat$FileName_cellmask))
+all_pixel <- loadImages(x = paste0(path.data, "images/", image_mat$FileName_FullStack))
+```
+
+
+# add the respective ImageNumber as in the sce object to the all_mask object
+```{r match image numbers to mask}
+# we add the metadata for the images.
+cur_df <- data.frame(cellmask = image_mat$FileName_cellmask,
+                     ImageNumber = image_mat$ImageNumber)
+
+# we set the rownames of the extracted data to be equal to the names of all_masks
+rownames(cur_df) <- gsub(pattern = ".tiff",replacement = "",image_mat$FileName_cellmask)
+
+# we add the extracted information via mcols in the order of the all_masks object
+mcols(all_mask) <- cur_df[names(all_mask),]
+```
+
+# add the respective ImageNumber as in the sce object to the all_pixel object
+```{r match image numbers to pixels}
+# we extract only the FileNames of the stacks as they are in the all_pixel object
+cur_df <- data.frame(cellmask = image_mat$FileName_FullStack,
+                     ImageNumber = image_mat$ImageNumber)
+
+# we set the rownames of the extracted data to be equal to the names of all_pixel
+rownames(cur_df) <- gsub(pattern = ".tiff",replacement = "",image_mat$FileName_FullStack)
+
+# we add the extracted information via mcols in the order of the all_pixel object
+mcols(all_pixel) <- cur_df[names(all_pixel),]
+```
+
+# scale the masks
+```{r scale masks}
+all_mask <- scaleImages(all_mask,2^16-1)
+all_pixel <- scaleImages(all_pixel,2^16-1) #issues with RAM, had to run on big windows
+```
+
+# add the channel names
+```{r add channel names}
+panel_meta <- read.csv(file = paste0(path.data, "panel.csv"), sep= ",",  stringsAsFactors = FALSE )
+
+# sort the channel names accordingly to the stack
+# extract metal masshttp://127.0.0.1:5322/#
+panel_meta$Metal.Number <-  str_extract(string = panel_meta$Metal.Tag, pattern = "[0-9]+")
+panel_meta$Metal.Number <- as.numeric(panel_meta$Metal.Number) #convert metal number to numeric for sorting
+# order according to  metal mass
+panel_meta = panel_meta[order(panel_meta$Metal.Number),]
+
+channelNames(all_pixel) <- rowData(sce)[,"clean_target"]
+
+saveRDS(all_mask, paste0(path.files, "all_mask.rds"))
+saveRDS(all_pixel, paste0(path.files, "all_pixel.rds"))
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+

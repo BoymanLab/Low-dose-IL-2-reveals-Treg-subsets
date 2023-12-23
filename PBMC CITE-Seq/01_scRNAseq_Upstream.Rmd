@@ -1,0 +1,822 @@
+---
+title: "01_scRNAseq_Upstream_jan"
+author: "docaspar"
+date: "11/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+# This is the analysis of the Lupus project Pilot experiment.
+The experiment was done on the 09.04.2021. Sequencing library prep was done on the week 12. - 16.4. 
+Sequencing results were received on the 27.4. 
+Demultiplexing was done by Simona using the cellranger Multi pipeline. Surface protein libraries were specified as "Antibody capture"
+and Cellranger was run with "force cells" activated and set to 20.000 cells per sample.
+In this script, I will try to combine 
+Dataset filtering
+Dataset integration
+SNP data addition and further cell filtering
+VDJ addition
+WNN analysis for dimensionality reduction
+Cell type annotation
+
+# Loading packages
+```{r libs}
+library(Seurat)
+library(scRepertoire)
+library(tidyverse)
+library(patchwork)
+library(umap)
+#library(SeuratData)
+library(cowplot)
+library(dplyr)
+library(data.table)
+```
+
+
+```{r set paths}
+# Clearing the environment
+rm(list = ls())
+
+path.data <- "../Data/"
+path.files <- "../R_files/"
+path.our <- "../R_out/"
+
+data.dir1 <- paste0( path.data, "multi_Lupus_1/outs/count/filtered_feature_bc_matrix")
+data.dir2 <- paste0( path.data, "multi_Lupus_2/outs/count/filtered_feature_bc_matrix")
+data.dir3 <- paste0( path.data, "multi_Lupus_3/outs/count/filtered_feature_bc_matrix")
+```
+
+## Part 1 - Data loading, structuring and standard filtering
+
+```{r part 1}
+# Loading the data into R
+Lupus1.data <- Read10X(data.dir = data.dir1)
+Lupus2.data <- Read10X(data.dir = data.dir2)
+Lupus3.data <- Read10X(data.dir = data.dir3)
+
+# Translating protein DNA_IDs into gene names
+protein.list <- read.csv2(file = paste0(path.data, 'TotalSeq_C complete cocktail list.csv'), header = T)
+rownames(Lupus1.data$`Antibody Capture`)[7:146]
+rownames(Lupus1.data$`Antibody Capture`)[7:146] <- protein.list[,6]
+rownames(Lupus2.data$`Antibody Capture`)[7:146] <- protein.list[,6]
+rownames(Lupus3.data$`Antibody Capture`)[7:146] <- protein.list[,6]
+rownames(Lupus1.data$`Antibody Capture`)[7:146]
+
+
+
+# Append to each RNA name and to each Protein name "RNA_" or "ADT_" at the beginning
+rownames(Lupus1.data$`Antibody Capture`)[7:146] <- paste0(rownames(Lupus1.data$`Antibody Capture`)[7:146],"_Protein")
+rownames(Lupus2.data$`Antibody Capture`)[7:146] <- paste0(rownames(Lupus2.data$`Antibody Capture`)[7:146],"_Protein")
+rownames(Lupus3.data$`Antibody Capture`)[7:146] <- paste0(rownames(Lupus3.data$`Antibody Capture`)[7:146],"_Protein")
+
+rownames(Lupus1.data$`Gene Expression`) <- paste0(rownames(Lupus1.data$`Gene Expression`),"_RNA")
+rownames(Lupus2.data$`Gene Expression`) <- paste0(rownames(Lupus2.data$`Gene Expression`),"_RNA")
+rownames(Lupus3.data$`Gene Expression`) <- paste0(rownames(Lupus3.data$`Gene Expression`),"_RNA")
+
+
+
+# Translating HTO IDs into Sample IDs
+rownames(Lupus1.data$`Antibody Capture`)[1:6] <- c('PPQ901 V2','PPQ901 V3','AAA092 V2','AAA092 V3','FTS963 V2','FTS963 V3')
+rownames(Lupus2.data$`Antibody Capture`)[1:6] <- c('PPQ901 V2','PPQ901 V3','AAA092 V2','AAA092 V3','FTS963 V2','FTS963 V3')
+rownames(Lupus3.data$`Antibody Capture`)[1:6] <- c('PPQ901 V2','PPQ901 V3','AAA092 V2','AAA092 V3','FTS963 V2','FTS963 V3')
+
+# Seurat Objects are created using the Gene expression data.
+Lupus1 <- CreateSeuratObject(counts = Lupus1.data$`Gene Expression`)
+Lupus2 <- CreateSeuratObject(counts = Lupus2.data$`Gene Expression`)
+Lupus3 <- CreateSeuratObject(counts = Lupus3.data$`Gene Expression`)
+
+
+# Assay Objects are created using the Antibody capture data. 
+# One assay is created for the Hashing, one assay is created for the surface protein quantification
+Lupus1_HTO_assay <- CreateAssayObject(counts = Lupus1.data$`Antibody Capture`[c(1:6),])
+Lupus2_HTO_assay <- CreateAssayObject(counts = Lupus2.data$`Antibody Capture`[c(1:6),])
+Lupus3_HTO_assay <- CreateAssayObject(counts = Lupus3.data$`Antibody Capture`[c(1:6),])
+
+Lupus1_Protein_assay <- CreateAssayObject(counts = Lupus1.data$`Antibody Capture`[c(7:146),])
+Lupus2_Protein_assay <- CreateAssayObject(counts = Lupus2.data$`Antibody Capture`[c(7:146),])
+Lupus3_Protein_assay <- CreateAssayObject(counts = Lupus3.data$`Antibody Capture`[c(7:146),])
+
+
+# Now the assays are added to the previously created Seurat objects
+Lupus1[["HTO"]] <- Lupus1_HTO_assay
+Lupus2[["HTO"]] <- Lupus2_HTO_assay
+Lupus3[["HTO"]] <- Lupus3_HTO_assay
+
+Lupus1[["Protein"]] <- Lupus1_Protein_assay
+Lupus2[["Protein"]] <- Lupus2_Protein_assay
+Lupus3[["Protein"]] <- Lupus3_Protein_assay
+
+
+# QC and selecting cells for further analysis
+# This filtering step will remove the bad quality cells based on the gene expression data. 
+# Cells removed will also be removed in the assay data.
+Lupus1[["percent.mt"]] <- PercentageFeatureSet(Lupus1, pattern = "^MT-")
+Lupus2[["percent.mt"]] <- PercentageFeatureSet(Lupus2, pattern = "^MT-")
+Lupus3[["percent.mt"]] <- PercentageFeatureSet(Lupus3, pattern = "^MT-")
+
+quantile(Lupus1@meta.data$nFeature_RNA,probs = seq(0, 1, 0.05))
+quantile(Lupus2@meta.data$nFeature_RNA,probs = seq(0, 1, 0.05))
+quantile(Lupus3@meta.data$nFeature_RNA,probs = seq(0, 1, 0.05))
+quantile(Lupus1@meta.data$percent.mt,probs = seq(0, 1, 0.05))
+quantile(Lupus2@meta.data$percent.mt,probs = seq(0, 1, 0.05))
+quantile(Lupus3@meta.data$percent.mt,probs = seq(0, 1, 0.05))
+
+Lupus1_filtered <- subset(Lupus1, subset = nFeature_RNA > 400 & nFeature_RNA < 2500 & percent.mt < 10)
+Lupus2_filtered <- subset(Lupus2, subset = nFeature_RNA > 400 & nFeature_RNA < 2500 & percent.mt < 10)
+Lupus3_filtered <- subset(Lupus3, subset = nFeature_RNA > 400 & nFeature_RNA < 2500 & percent.mt < 10)
+
+VlnPlot(Lupus1_filtered, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(Lupus2_filtered, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+VlnPlot(Lupus3_filtered, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# How many cells are left in each of the three datasets?
+nrow(Lupus1_filtered@meta.data)
+nrow(Lupus2_filtered@meta.data)
+nrow(Lupus3_filtered@meta.data)
+
+# Now, normalization of the Gene expression data and of the assay data is done.
+# Here, I am not sure about the margin setting. Currently, I am following the suggested code from the Satija lab.
+Lupus1_filtered <- NormalizeData(Lupus1_filtered)
+Lupus1_filtered <- NormalizeData(Lupus1_filtered, assay = "HTO", normalization.method = "CLR")
+Lupus1_filtered <- NormalizeData(Lupus1_filtered, assay= "Protein", normalization.method = "CLR", margin = 2)
+
+Lupus2_filtered <- NormalizeData(Lupus2_filtered)
+Lupus2_filtered <- NormalizeData(Lupus2_filtered, assay = "HTO", normalization.method = "CLR")
+Lupus2_filtered <- NormalizeData(Lupus2_filtered, assay= "Protein", normalization.method = "CLR", margin = 2)
+
+Lupus3_filtered <- NormalizeData(Lupus3_filtered)
+Lupus3_filtered <- NormalizeData(Lupus3_filtered, assay = "HTO", normalization.method = "CLR")
+Lupus3_filtered <- NormalizeData(Lupus3_filtered, assay= "Protein", normalization.method = "CLR", margin = 2)
+```
+
+## Part 2 - Adding Azimuth cell identities to cells
+```{r part 2}
+# Matching cell identities previously defined using Azimuth (https://satijalab.org/azimuth/). 
+# This is not necessarily the best cell type annotation that we can get but it is a quick way to get a first overview.
+predictions_1 <- read.delim(paste0(path.data, 'Azimuth Output/Dataset 1/azimuth_pred.tsv'), row.names = 1)
+predictions_2 <- read.delim(paste0(path.data, 'Azimuth Output/Dataset 2/azimuth_pred.tsv'), row.names = 1)
+predictions_3 <- read.delim(paste0(path.data, 'Azimuth Output/Dataset 3/azimuth_pred.tsv'), row.names = 1)
+
+Lupus1_filtered <- AddMetaData(
+  object = Lupus1_filtered,
+  metadata = predictions_1)
+
+Lupus2_filtered <- AddMetaData(
+  object = Lupus2_filtered,
+  metadata = predictions_2)
+
+Lupus3_filtered <- AddMetaData(
+  object = Lupus3_filtered,
+  metadata = predictions_3)
+```
+
+## Part 3 - Demultiplexing based on Hashing HTOs
+```{r part 3}
+# Demultiplexing based on the HTOs is done
+Lupus1_filtered <- HTODemux(Lupus1_filtered, assay = "HTO", positive.quantile = 0.99)
+Lupus2_filtered <- HTODemux(Lupus2_filtered, assay = "HTO", positive.quantile = 0.99)
+Lupus3_filtered <- HTODemux(Lupus3_filtered, assay = "HTO", positive.quantile = 0.99)
+# I notice that background signals seem to be good overall (low Cutoff reads) but there is one outlayer in the second dataset (Cutoff 276 reads).
+# This is surprising since all datasets were prepared from the same sample pool
+
+table(Lupus1_filtered$HTO_classification.global)
+table(Lupus2_filtered$HTO_classification.global)
+table(Lupus3_filtered$HTO_classification.global)
+
+# Ridgeplot analysis of the Hashtag barcodes
+Idents(Lupus1_filtered) <- "HTO_maxID"
+Idents(Lupus2_filtered) <- "HTO_maxID"
+Idents(Lupus3_filtered) <- "HTO_maxID"
+
+RidgePlot(Lupus1_filtered, assay = "HTO", features = rownames(Lupus1_filtered[["HTO"]])[1:6], ncol = 2)
+RidgePlot(Lupus2_filtered, assay = "HTO", features = rownames(Lupus2_filtered[["HTO"]])[1:6], ncol = 2)
+RidgePlot(Lupus3_filtered, assay = "HTO", features = rownames(Lupus3_filtered[["HTO"]])[1:6], ncol = 2)
+
+
+remove(Lupus1,Lupus1_HTO_assay,Lupus1_Protein_assay,Lupus1.data,Lupus2,Lupus2_HTO_assay,Lupus2_Protein_assay,Lupus2.data,
+       Lupus3,Lupus3_HTO_assay,Lupus3_Protein_assay,Lupus3.data,predictions_1,predictions_2,predictions_3,
+       data.dir1,data.dir2,data.dir3,protein.list)
+```
+
+## Part 4 - Data integration - RNA and Protein data are integrated separately
+```{r part 4}
+# Find variable features in all three datasets
+Lupus1_filtered <- FindVariableFeatures(Lupus1_filtered)
+Lupus2_filtered <- FindVariableFeatures(Lupus2_filtered)
+Lupus3_filtered <- FindVariableFeatures(Lupus3_filtered)
+
+Lupus1_filtered <- RenameCells(object = Lupus1_filtered, add.cell.id = "A")
+Lupus2_filtered <- RenameCells(object = Lupus2_filtered, add.cell.id = "B")
+Lupus3_filtered <- RenameCells(object = Lupus3_filtered, add.cell.id = "C")
+
+
+# From here on, I am following the instructions for integration from:
+# https://satijalab.org/seurat/articles/integration_introduction.html
+# Create a list containing the three datasets
+Lupus_dataset_list <- list(Lupus1_filtered,Lupus2_filtered,Lupus3_filtered)
+
+# Select features that are repeatedly variable across datasets for integration
+# The integration is done independently for the RNA and the Protein assay.
+features_RNA <- SelectIntegrationFeatures(object.list = Lupus_dataset_list,assay = c("RNA","RNA","RNA"))
+features_Protein <- SelectIntegrationFeatures(object.list = Lupus_dataset_list,assay = c("Protein","Protein","Protein"))
+
+# Perform integration. This command requires long time / a lot of computational resources to run (27 min on the Server).
+anchors_RNA <- FindIntegrationAnchors(object.list = Lupus_dataset_list, anchor.features = features_RNA,assay = c("RNA","RNA","RNA"))
+anchors_Protein <- FindIntegrationAnchors(object.list = Lupus_dataset_list, anchor.features = features_Protein,assay = c("Protein","Protein","Protein"))
+
+# This command creates an 'integrated' data assay in a new Seurat object.
+Lupus.combined.RNA <- IntegrateData(anchorset = anchors_RNA,new.assay.name = "integratedRNA")
+Lupus.combined.Protein <- IntegrateData(anchorset = anchors_Protein,new.assay.name = "integratedProtein")
+
+# Exploring the objects generated at this point
+Lupus1_filtered@assays$RNA@counts["IGKC-RNA","A_AAACCTGCACAGACAG-1"]
+Lupus1_filtered@assays$RNA@data["IGKC-RNA","A_AAACCTGCACAGACAG-1"]
+Lupus.combined.RNA@assays$RNA@counts["IGKC-RNA","A_AAACCTGCACAGACAG-1"]
+Lupus.combined.RNA@assays$RNA@data["IGKC-RNA","A_AAACCTGCACAGACAG-1"]
+
+nrow(Lupus1_filtered@assays$RNA@counts)
+nrow(Lupus.combined.RNA@assays$RNA@counts)
+nrow(Lupus1_filtered@assays$RNA@data)
+nrow(Lupus.combined.RNA@assays$RNA@data)
+
+Lupus.combined.RNA@assays$integratedRNA@data["IGKC-RNA","A_AAACCTGCACAGACAG-1"]
+nrow(Lupus.combined.RNA@assays$integratedRNA@data)
+```
+
+## Part 5 - WNN
+```{r part 5}
+# Following:
+# https://github.com/satijalab/seurat/issues/2706
+# https://github.com/satijalab/seurat/issues/3645
+# https://github.com/satijalab/seurat/issues/3843
+# https://github.com/satijalab/seurat/issues/4922
+# Now I want to perform WNN. For this, I need to transfer the integrated protein assay from the Lupus.combined.Protein object to the
+# Lupus.combined.RNA object.
+# But first, I am preforming data scaling and PCA on both objects separately.
+DefaultAssay(Lupus.combined.RNA)
+DefaultAssay(Lupus.combined.Protein)
+
+Lupus.combined.RNA <- ScaleData(Lupus.combined.RNA, verbose = FALSE)
+Lupus.combined.RNA <- RunPCA(Lupus.combined.RNA, npcs = 30, verbose = FALSE)
+
+Lupus.combined.Protein <- ScaleData(Lupus.combined.Protein, verbose = FALSE)
+Lupus.combined.Protein <- RunPCA(Lupus.combined.Protein, npcs = 30, verbose = FALSE)
+
+# Then, the normalized (this is in the slot "data") integrated Protein assay is fetched.
+adt.data <- GetAssayData(object =  Lupus.combined.Protein[['integratedProtein']], slot = 'data')
+
+# Then, this assay data is added to the Lupus.combined.RNA object
+Lupus.combined.RNA[["integrated.adt"]] <- CreateAssayObject(data = adt.data )
+
+# Then, the data in this assay has to be scaled and PCA has to be run again...because this information is not carried over.
+# Probably, I could skip the ScaleData and RunPCA commands for Lupus.combined.Protein
+DefaultAssay(Lupus.combined.RNA) <- "integrated.adt"
+Lupus.combined.RNA <- ScaleData(Lupus.combined.RNA)
+Lupus.combined.RNA <- RunPCA(Lupus.combined.RNA,  reduction.name = 'pca.adt', reduction.key = 'PCadt_', features = features_Protein, npcs = 30)
+
+# Now we have prepared the object Lupus.combined.RNA for WNN. It contains integrated data on RNA and ADT level.
+Lupus.combined.RNA@assays
+Lupus.combined.RNA@reductions
+
+# I double check that the correct assays are associated with the correct PCAs.
+Lupus.combined.RNA[['pca']]@assay.used
+Lupus.combined.RNA[['pca.adt']]@assay.used
+
+# Finally, the FindMultiModalNeighbors function is called, using the PCAs from above.
+Lupus.combined.RNA <- FindMultiModalNeighbors(
+  Lupus.combined.RNA, reduction.list = list("pca", "pca.adt"), 
+  dims.list = list(1:30, 1:30), modality.weight.name = c("RNA.weight","Protein.weight"))
+
+# At this step, I am giving the object a new name and remove all the others.
+Lupus.combined <- Lupus.combined.RNA
+remove(adt.data,anchors_Protein,anchors_RNA,Lupus_dataset_list,Lupus.combined.Protein,Lupus.combined.RNA,Lupus1_filtered,Lupus2_filtered,Lupus3_filtered,
+       features_Protein,features_RNA)
+```
+
+## Part 6 - Clustering and UMAP visualization
+```{r part 6}
+# I am performing clustering and UMAP visualization of the dataset
+Lupus.combined@reductions
+Lupus.combined@graphs
+Lupus.combined <- RunUMAP(Lupus.combined, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+Lupus.combined <- FindClusters(Lupus.combined, graph.name = "wsnn", algorithm = 1, resolution = 0.8, verbose = FALSE)
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = 'predicted.celltype.l2')
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = 'HTO_classification.global')
+
+# I am preparing some plots to compare captured RNA expression and surface protein data.
+# Now many Proteins / RNAs are present in two assays and this can cause problems because Seurat doesn't know which of the two to use.
+# Data in RNA/Protein assay slot data are not the same as in the integratedRNA or integrated.adt data slot:
+unname(Lupus.combined@assays$Protein@data[rownames(Lupus.combined@assays$integrated.adt@data),1])- 
+  unname(Lupus.combined@assays$integrated.adt@data[rownames(Lupus.combined@assays$integrated.adt@data),1])
+
+
+unname(Lupus.combined@assays$RNA@data[rownames(Lupus.combined@assays$integratedRNA@data),2])- 
+  unname(Lupus.combined@assays$integratedRNA@data[rownames(Lupus.combined@assays$integratedRNA@data),2]) 
+
+# Even if it looks like it first, also the values in the RNA and integratedRNA assay are not the same which is shown below.
+test <- as.data.frame(unname(Lupus.combined@assays$RNA@data[rownames(Lupus.combined@assays$integratedRNA@data),])- 
+                        unname(Lupus.combined@assays$integratedRNA@data[rownames(Lupus.combined@assays$integratedRNA@data),]))
+
+which(test>0, arr.ind=TRUE)
+remove(test)
+
+# To look at expression of genes or proteins on the UMAP via Featureplot, we want to use the RNA assay only.
+# --> Use the multimodal UMAP but take values to show feature expression from RNA slots only.
+# --> Rename the rows in the RNA and Protein slots so that they can be called directly. Add a "_bi" (before integration)
+DefaultAssay(Lupus.combined) <- "RNA"
+
+rownames(Lupus.combined@assays$RNA@data) <- paste0(rownames(Lupus.combined@assays$RNA@data),"-bi")
+rownames(Lupus.combined@assays$Protein@data) <- paste0(rownames(Lupus.combined@assays$Protein@data),"-bi")
+
+p1 <- FeaturePlot(Lupus.combined, features = c("CD8A-Protein-bi","IL2RA-Protein-bi"),
+                     reduction = 'wnn.umap', 
+                     cols = c("lightgrey","darkgreen"), ncol = 2)
+
+p2 <- FeaturePlot(Lupus.combined, features = c("CD8A-RNA-bi","IL2RA-RNA-bi"),
+                  reduction = 'wnn.umap', 
+                  cols = c("lightgrey","darkblue"), ncol = 2)
+remove(p1,p2)
+
+# Names need to be changed back otherwise subsetting doesn't work any more
+rownames(Lupus.combined@assays$RNA@data) <- gsub('.{3}$', '', rownames(Lupus.combined@assays$RNA@data))
+rownames(Lupus.combined@assays$Protein@data) <- gsub('.{3}$', '', rownames(Lupus.combined@assays$Protein@data))
+
+```
+
+## Part 7 - Addition of SNPs and investigation of SNP/Hashing overlap
+```{r part 7}
+# Addition of SNPs
+Lupus.combined.before.SNPs <- Lupus.combined 
+Lupus.combined <- Lupus.combined.before.SNPs
+
+SNPs_clusters1 <- read.csv(paste0(path.data, "souporcell/snp_demux_Lupus_1/clusters.tsv"), sep = "\t")
+SNPs_clusters2 <- read.csv(paste0(path.data, "souporcell/snp_demux_Lupus_2/clusters.tsv"), sep = "\t")
+SNPs_clusters3 <- read.csv(paste0(path.data, "souporcell/snp_demux_Lupus_3/clusters.tsv"), sep = "\t")
+
+shortSNPs_clusters1 <- SNPs_clusters1 [,c(1:3)]
+shortSNPs_clusters2 <- SNPs_clusters2 [,c(1:3)]
+shortSNPs_clusters3 <- SNPs_clusters3 [,c(1:3)]
+
+remove(SNPs_clusters1,SNPs_clusters2,SNPs_clusters3)
+
+# Naming the barcodes so that info of origin is kept
+shortSNPs_clusters1$barcode <- paste0(shortSNPs_clusters1$barcode,"_1")
+shortSNPs_clusters2$barcode <- paste0(shortSNPs_clusters2$barcode,"_2")
+shortSNPs_clusters3$barcode <- paste0(shortSNPs_clusters3$barcode,"_3")
+
+# Combining the three SNP data frames.
+short_SNP_clusters <- rbind(shortSNPs_clusters1,shortSNPs_clusters2,shortSNPs_clusters3)
+colnames(short_SNP_clusters) <- c("barcode.for.joining","status.by.SNPS","assignment.by.SNPS")
+
+# Inspect objects before joining
+Lupus.combined@meta.data$barcode.for.joining <- rownames(Lupus.combined@meta.data)
+head(Lupus.combined@meta.data$barcode.for.joining)
+head(short_SNP_clusters$barcode.for.joining)
+tail(Lupus.combined@meta.data$barcode.for.joining)
+tail(short_SNP_clusters$barcode.for.joining)
+
+# Fix the names
+short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_3"] <- paste0("C_",short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_3"])
+short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_2"] <- paste0("B_",short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_2"])
+short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_1"] <- paste0("A_",short_SNP_clusters$barcode.for.joining[short_SNP_clusters$barcode.for.joining %like% "_1"])
+short_SNP_clusters$barcode.for.joining <- substr(short_SNP_clusters$barcode.for.joining,1,nchar(short_SNP_clusters$barcode.for.joining)-2)
+
+# Do the merge
+Lupus.combined@meta.data <- merge(Lupus.combined@meta.data, short_SNP_clusters, by = 'barcode.for.joining',all.x=T)
+rownames(Lupus.combined@meta.data) <- Lupus.combined@meta.data$barcode.for.joining
+Lupus.combined@meta.data$barcode.for.joining <- NULL
+table(Lupus.combined@meta.data$status.by.SNPS,useNA = "always")
+
+remove(shortSNPs_clusters1,shortSNPs_clusters2,shortSNPs_clusters3)
+
+# Visualizing Hashtag demultiplexing and SNP demultiplexing for the integreated dataset
+HashtagsPlot <- as.data.frame(dplyr::count(Lupus.combined@meta.data, HTO_classification.global))
+plot1 <- ggplot(HashtagsPlot, aes(HTO_classification.global,n))+geom_bar(stat="identity")+
+  theme(axis.text.x = element_text(angle = 90))+theme_classic()+
+  geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = -1, position ="stack")
+plot1
+
+SNPsPlot <- as.data.frame(dplyr::count(Lupus.combined@meta.data, status.by.SNPS))
+plot2 <- ggplot(SNPsPlot, aes(status.by.SNPS,n))+geom_bar(stat="identity")+
+  theme(axis.text.x = element_text(angle = 90))+
+  geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = -1, position ="stack")+theme_classic()
+plot2
+
+remove(HashtagsPlot,plot1,plot2,SNPsPlot)
+
+table(Lupus.combined@meta.data$HTO_classification.global,Lupus.combined@meta.data$status.by.SNPS,useNA = "always")
+
+
+# Remove cells that are called to be doublets in HTO AND SNP classifications
+double_doublets <- rownames(Lupus.combined@meta.data[Lupus.combined@meta.data$HTO_classification.global == "Doublet" & Lupus.combined@meta.data$status.by.SNPS == "doublet" 
+                              & !is.na(Lupus.combined@meta.data$status.by.SNPS),])
+Lupus.combined@meta.data$double.doublet <- "no"
+Lupus.combined@meta.data$double.doublet[rownames(Lupus.combined@meta.data)%in%double_doublets] <- "yes"
+Lupus.doublet.filtered <- subset(Lupus.combined, subset = double.doublet=="no")
+table(Lupus.doublet.filtered@meta.data$HTO_classification.global,Lupus.doublet.filtered@meta.data$status.by.SNPS,useNA = "always")
+DimPlot(Lupus.doublet.filtered, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+DimPlot(Lupus.doublet.filtered, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5,group.by = "HTO_classification.global")
+
+# Understand which Hashtag clusters belong to which SNP clusters.
+# That is a bit complicated because the souporcell run was done 3 times, and the same genotypes did not get the same clusters assigned in each run.
+# Split the dataset into three parts to do this analysis
+# Before splitting, add a column to the metadata defining the dataset
+Lupus.doublet.filtered.subset <- subset(Lupus.doublet.filtered, subset = HTO_classification.global =="Singlet")
+Lupus.doublet.filtered.subset <- subset(Lupus.doublet.filtered.subset, subset = status.by.SNPS =="singlet")
+
+Lupus.doublet.filtered.subset$Dataset <- 1 
+Lupus.doublet.filtered.subset$Dataset[grep("B_",rownames(Lupus.doublet.filtered.subset@meta.data))] <- 2
+Lupus.doublet.filtered.subset$Dataset[grep("C_",rownames(Lupus.doublet.filtered.subset@meta.data))] <- 3
+
+Part1 <- Lupus.doublet.filtered.subset@meta.data[Lupus.doublet.filtered.subset@meta.data$Dataset==1,]
+Part2 <- Lupus.doublet.filtered.subset@meta.data[Lupus.doublet.filtered.subset@meta.data$Dataset==2,]
+Part3 <- Lupus.doublet.filtered.subset@meta.data[Lupus.doublet.filtered.subset@meta.data$Dataset==3,]
+
+tbl1 <- with(Part1, table(assignment.by.SNPS, hash.ID))
+tbl2 <- with(Part2, table(assignment.by.SNPS, hash.ID))
+tbl3 <- with(Part3, table(assignment.by.SNPS, hash.ID))
+
+barplot(tbl1, beside = TRUE, legend = TRUE)
+barplot(tbl2, beside = TRUE, legend = TRUE)
+barplot(tbl3, beside = TRUE, legend = TRUE)
+
+# This shows that there is a very good consistency between HTO and SNP demultiplexing.
+remove(tbl1,tbl2,tbl3,Part1,Part2,Part3,Lupus.doublet.filtered.subset)
+```
+
+## Part 8 - Further cell filtering
+```{r part 8}
+# There are cells which are called doublets by HTO but singlet by SNPs. How does the ridgeplot look like for those?
+HTO_doublet_SNP_singlet <- rownames(Lupus.doublet.filtered@meta.data[Lupus.doublet.filtered@meta.data$HTO_classification.global == "Doublet" & Lupus.doublet.filtered@meta.data$status.by.SNPS == "singlet" 
+                                                     & !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS),])
+Lupus.doublet.filtered@meta.data$HTO.only.doublet <- "no"
+Lupus.doublet.filtered@meta.data$HTO.only.doublet[rownames(Lupus.doublet.filtered@meta.data)%in%HTO_doublet_SNP_singlet] <- "yes"
+Lupus.doublet.filtered.2 <- subset(Lupus.doublet.filtered, subset = HTO.only.doublet=="yes")
+Idents(Lupus.doublet.filtered.2) <- "HTO_maxID"
+RidgePlot(Lupus.doublet.filtered.2, assay = "HTO", features = rownames(Lupus.doublet.filtered.2[["HTO"]])[1:6], ncol = 2)
+
+
+# In those cells where HTO calls a doublet but SNP calls a singlet: Assign those cells to be a singlet where:
+# the ratio of the max HTO and the second highest HTO is >=4
+# Creating a dataframe containig the HTO counts
+bar.table <- as.data.frame(Lupus.doublet.filtered.2@assays$HTO@counts)
+bar.table2 <- data.table::transpose(bar.table)
+rownames(bar.table2) <- colnames(bar.table)
+colnames(bar.table2) <- rownames(bar.table)
+bar.table <- bar.table2
+remove(bar.table2)
+
+snr <- rep(0L, nrow(bar.table))
+
+for (i in 1:nrow(bar.table)) {
+  counts <- as.numeric(bar.table[i, ])
+  counts <- counts[order(counts, decreasing=T)]
+  if (counts[1] == 0) { next }
+  if (counts[2] == 0) { counts[2] <- 1 }
+  snr[i] <- counts[1]/counts[2]
+  names(snr) <- row.names(bar.table)
+}
+
+table_snr <- merge(bar.table, snr, by = "row.names")
+
+#if loop: if t.snr. >= x take Barcode information, if < it is doublet or negative 
+#first generate column for annotation 
+table_snr$annotated <- 0
+#important to set [i] otherwise it does not properly loop through the data frame 
+for (i in 1:nrow(table_snr)) {
+  if (table_snr$y[i] >= 4 ) {
+    table_snr$annotated[i] <- "Singlet"
+  }
+  else (table_snr$annotated[i] <- "Doublet_or_Negative")
+}
+
+table(table_snr$annotated)
+
+#introduce column with barcode and take column name of the largest value 
+table_snr$Barcode <- NA
+table_snr$Barcode <- colnames(table_snr)[apply(table_snr,1,which.max)]
+for(i in 1:nrow(table_snr)) {
+  if (table_snr$annotated[i] == "Doublet_or_Negative"){
+    table_snr$Barcode[i] <- "Doublet_or_Negative"
+  } 
+  
+  else {table_snr$Barcode[i] <- table_snr$Barcode[i]}
+}
+
+rownames(table_snr) <- table_snr$Row.names
+table_snr <- table_snr[,c(9,10)]
+colnames(table_snr) <- c("Manual.annotation","Sample")
+
+Lupus.doublet.filtered.2@meta.data <- merge(Lupus.doublet.filtered.2@meta.data,table_snr, by=0)
+rownames(Lupus.doublet.filtered.2@meta.data) <- Lupus.doublet.filtered.2@meta.data$Row.names
+
+# Cells that will be kept after the following command are those that I manually consider to be singlets because of the SNP and HTO data even though
+# the HTO demultiplexing algorythm calls them to be doublets.
+Lupus.doublet.filtered.2 <- subset(Lupus.doublet.filtered.2, subset = Manual.annotation =="Singlet")
+
+# I have noticed that the HTO with the highest amount of reads is not necessarily the one that is also classified as HTO_maxID.
+# I want to make only those cells to singlets, where the HTO with the highest amount of reads is ALSO the one that is also classified as HTO_maxID
+keepers <- rownames(Lupus.doublet.filtered.2@meta.data[Lupus.doublet.filtered.2@meta.data$Sample==Lupus.doublet.filtered@meta.data$HTO_maxID[rownames(Lupus.doublet.filtered@meta.data)%in%rownames(Lupus.doublet.filtered.2@meta.data)],])
+Lupus.doublet.filtered.2 <- subset(Lupus.doublet.filtered.2, subset = Row.names%in%keepers)
+
+# Further analysis on the HTO called "negative" cells:
+HTO_negatives <- subset(Lupus.doublet.filtered,subset = HTO_classification.global =="Negative")
+Idents(HTO_negatives) <- "HTO_maxID"
+RidgePlot(HTO_negatives, assay = "HTO", features = rownames(HTO_negatives[["HTO"]])[1:6], ncol = 2)
+Idents(HTO_negatives) <- "seurat_clusters"
+DimPlot(HTO_negatives, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+FeaturePlot(HTO_negatives,features = "B2M-RNA",reduction = 'wnn.umap')
+markers <- FindAllMarkers(HTO_negatives)
+Cluster19 <- subset(Lupus.doublet.filtered,subset = seurat_clusters=="19")
+DimPlot(Cluster19, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+table(HTO_negatives@meta.data$predicted.celltype.l2[HTO_negatives@meta.data$seurat_clusters=="19"])
+
+# Based on the analysis above I decide to exclude cluster 19 from the analysis. It is a weird cluster that
+# has many different cell types
+# contains mainly HTO classification negative cells
+# shows no or weak expression of B2M
+
+Lupus.doublet.filtered <- subset(Lupus.doublet.filtered, idents = c(0:18,20:35))
+DimPlot(Lupus.doublet.filtered, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+DimPlot(Lupus.doublet.filtered, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5,group.by = "HTO_classification.global")
+table(Lupus.doublet.filtered@meta.data$HTO_classification.global)
+
+# Create two new columns in the metadata of Lupus.doublet.filtered which contain final Singlet/Doublet/Negative information and Sample information.
+# --> Based on further integration of SNP and Hashtag data:
+# 1) HTO Doublet SNP Doublet --> already removed (classified as doublet and removed)
+# 2) HTO Doublet SNP Singlet --> classified according to the strategy above - cells left in "Lupus.doublet.filtered.2" are singlets, the rest doublets
+# 3) HTO Doublet SNP unassigned --> classified as doublet with sample ID "unknown"
+# 4) HTO Doublet SNP NA --> classified as doublet with sample ID "unknown"
+# 5) HTO Negative SNP Doublet --> classified as doublet with sample ID "unknown"
+# 6) HTO Negative SNP Singlet --> classified as singlet with unknown sample ID
+# 7) HTO Negative SNP unassigned --> classified as negative with unknown sample ID
+# 8) HTO Negative SNP NA --> classified as negative with unknown sample ID
+# 9) HTO Singlet SNP Doublet --> classified as singlets with sample ID
+# 10) HTO Singlet SNP Singlet --> classified as singlet with sample ID
+# 11) HTO Singlet SNP unassigned --> classified as singlet with sample ID
+# 12) HTO Singlet SNP NA --> classified as singlet with sample ID
+
+# --> Final classification
+table(Lupus.doublet.filtered@meta.data$HTO_classification.global,Lupus.doublet.filtered@meta.data$status.by.SNPS,useNA = "always")
+Lupus.doublet.filtered@meta.data$Cell.classification <- ""
+Lupus.doublet.filtered@meta.data$Sample <- ""
+
+# 1) Done
+
+# 2)
+# First put all to doublets and "unknown", then change back those that are manually classified as singlets
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" & 
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Doublet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+
+
+Lupus.doublet.filtered@meta.data$Cell.classification[rownames(Lupus.doublet.filtered@meta.data) %in% rownames(Lupus.doublet.filtered.2@meta.data)] <- "Singlet"
+Lupus.doublet.filtered@meta.data$Sample[rownames(Lupus.doublet.filtered@meta.data) %in% rownames(Lupus.doublet.filtered.2@meta.data)] <- Lupus.doublet.filtered@meta.data$HTO_maxID[rownames(Lupus.doublet.filtered@meta.data) %in% rownames(Lupus.doublet.filtered.2@meta.data)]
+
+
+nrow(Lupus.doublet.filtered@meta.data[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" &
+                                        Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                        !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)&
+                                        Lupus.doublet.filtered@meta.data$Cell.classification=="Doublet",])
+
+# 3)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" & 
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Doublet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 4)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" &
+                                                       is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Doublet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Doublet" &
+                                          is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 5)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" & 
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="doublet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Doublet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="doublet" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 6)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" & 
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Singlet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 7)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" & 
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Negative"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 8)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" &
+                                                       is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Negative"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Negative" &
+                                          is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Unknown"
+
+# 9)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" & 
+                                                      Lupus.doublet.filtered@meta.data$status.by.SNPS=="doublet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Singlet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                      Lupus.doublet.filtered@meta.data$status.by.SNPS=="doublet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- Lupus.doublet.filtered@meta.data$hash.ID[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                                                                                                                                         Lupus.doublet.filtered@meta.data$status.by.SNPS=="doublet" &
+                                                                                                                                                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)]
+
+# 10)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                     Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Singlet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- Lupus.doublet.filtered@meta.data$hash.ID[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                                                                                                                                         Lupus.doublet.filtered@meta.data$status.by.SNPS=="singlet" &
+                                                                                                                                                                         !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)]
+
+# 11)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                       Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                                       !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Singlet"
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                          Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                          !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- Lupus.doublet.filtered@meta.data$hash.ID[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                                                                                                                 Lupus.doublet.filtered@meta.data$status.by.SNPS=="unassigned" &
+                                                                                                                                                 !is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)]
+
+# 12)
+Lupus.doublet.filtered@meta.data$Cell.classification[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                       is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- "Singlet"
+
+Lupus.doublet.filtered@meta.data$Sample[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                          is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)] <- Lupus.doublet.filtered@meta.data$hash.ID[Lupus.doublet.filtered@meta.data$HTO_classification.global=="Singlet" &
+                                                                                                                                                is.na(Lupus.doublet.filtered@meta.data$status.by.SNPS)]
+
+
+
+
+Lupus.combined <- subset(Lupus.doublet.filtered,subset = Cell.classification =="Singlet")
+remove(bar.table,HTO_negatives,Lupus.combined.before.SNPs,Lupus.doublet.filtered,Lupus.doublet.filtered.2,markers,short_SNP_clusters,table_snr,
+       counts,double_doublets,HTO_doublet_SNP_singlet,i,keepers,snr)
+
+
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5)
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = 'Cell.classification')
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = 'Sample')
+```
+
+## Part 9 - Addition of TCR and BCR data
+```{r part 9}
+# The data is loaded into R
+BCR1 <- read.csv(paste0(path.data, "multi_Lupus_1/outs/vdj_b/filtered_contig_annotations.csv"))
+BCR2 <- read.csv(paste0(path.data, "multi_Lupus_2/outs/vdj_b/filtered_contig_annotations.csv"))
+BCR3 <- read.csv(paste0(path.data, "multi_Lupus_3/outs/vdj_b/filtered_contig_annotations.csv"))
+
+TCR1 <- read.csv(paste0(path.data, "multi_Lupus_1/outs/vdj_t/filtered_contig_annotations.csv"))
+TCR2 <- read.csv(paste0(path.data, "multi_Lupus_2/outs/vdj_t/filtered_contig_annotations.csv"))
+TCR3 <- read.csv(paste0(path.data, "multi_Lupus_3/outs/vdj_t/filtered_contig_annotations.csv"))
+
+# The three BCR and TCR datasets get dataset IDs assigned.
+BCR1$barcode <- paste0(BCR1$barcode,"_Dataset 1")
+BCR2$barcode <- paste0(BCR2$barcode,"_Dataset 2")
+BCR3$barcode <- paste0(BCR3$barcode,"_Dataset 3")
+
+TCR1$barcode <- paste0(TCR1$barcode,"_Dataset 1")
+TCR2$barcode <- paste0(TCR2$barcode,"_Dataset 2")
+TCR3$barcode <- paste0(TCR3$barcode,"_Dataset 3")
+
+# The BCR and TCR datasets are combined into one dataframe
+All.BCRs <- rbind(BCR1,BCR2,BCR3)
+All.TCRs <- rbind(TCR1,TCR2,TCR3)
+
+# The combineBCR / combineTCR function is executed
+BCRcombined <- combineBCR(All.BCRs,samples = "A", ID = "A")
+TCRcombined <- combineTCR(All.TCRs,samples = "A", ID = "A",cells ="T-AB")
+
+# The row names of BCRcombined / TCRcombined and Lupus.combined need to match, otherwise "combineExpression" fails
+BCRcombined$A_A$barcode
+TCRcombined$A_A$barcode
+tail(rownames(Lupus.combined@meta.data))
+head(rownames(Lupus.combined@meta.data))
+
+
+# Strategy: Make the barcodes unique at the beginning
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 1"] <- gsub("A_A_", "A_", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 1"])
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 2"] <- gsub("A_A_", "B_", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 2"])
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 3"] <- gsub("A_A_", "C_", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 3"])
+
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 1"] <- gsub("A_A_", "A_", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 1"])
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 2"] <- gsub("A_A_", "B_", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 2"])
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 3"] <- gsub("A_A_", "C_", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 3"])
+
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 1"] <- gsub("-1_Dataset 1","-1", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 1"])
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 2"] <- gsub("-1_Dataset 2","-1", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 2"])
+BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 3"] <- gsub("-1_Dataset 3","-1", BCRcombined$A_A$barcode[BCRcombined$A_A$barcode %like% "Dataset 3"])
+
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 1"] <- gsub("-1_Dataset 1","-1", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 1"])
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 2"] <- gsub("-1_Dataset 2","-1", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 2"])
+TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 3"] <- gsub("-1_Dataset 3","-1", TCRcombined$A_A$barcode[TCRcombined$A_A$barcode %like% "Dataset 3"])
+
+Lupus.combined.BCR <- Lupus.combined
+
+Lupus.combined<- combineExpression(TCRcombined, Lupus.combined, cloneCall="aa", proportion = F, cloneTypes=c(Single=1, Small=5, Medium=20, Large=100, Hyperexpanded=500))
+Lupus.combined.BCR <- combineExpression(BCRcombined, Lupus.combined.BCR, cloneCall="aa", proportion = F, cloneTypes=c(Single=1, Small=5, Medium=20, Large=100, Hyperexpanded=500))
+
+Lupus.combined.BCR@meta.data <- Lupus.combined.BCR@meta.data[,c(28:34)]
+colnames(Lupus.combined.BCR@meta.data) <- c("barcode_BCR","CTgene_BCR","CTnt_BCR","CTaa_BCR","CTstrict_BCR","Frequency_BCR","cloneType_BCR")
+
+rownames(Lupus.combined@meta.data)
+Lupus.combined@meta.data <- merge(Lupus.combined@meta.data, Lupus.combined.BCR@meta.data, by=0, all=TRUE)
+
+colnames(Lupus.combined@meta.data)
+colnames(Lupus.combined@meta.data)[29:35] <- c("barcode_TCR","CTgene_TCR","CTnt_TCR","CTaa_TCR","CTstrict_TCR","Frequency_TCR","cloneType_TCR")
+Lupus.combined@meta.data$Row.names
+rownames(Lupus.combined@meta.data) <- Lupus.combined@meta.data$Row.names
+
+head(Lupus.combined@meta.data)
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = F, repel = TRUE, label.size = 2.5,group.by = "cloneType_TCR")
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = F, repel = TRUE, label.size = 2.5,group.by = "cloneType_BCR")
+
+table(Lupus.combined@meta.data$predicted.celltype.l2)
+Lupus.combined@meta.data$Frequency_TCR[Lupus.combined@meta.data$predicted.celltype.l2=="Treg"]
+
+
+# Addition of a Timepoint column in the Lupus.combined dataset
+Lupus.combined@meta.data$Timepoint <- "unknown"
+Lupus.combined@meta.data$Timepoint[Lupus.combined@meta.data$Sample =="PPQ901 V2" | Lupus.combined@meta.data$Sample =="AAA092 V2" | Lupus.combined@meta.data$Sample =="FTS963 V2"] <- "pre-treatment"
+Lupus.combined@meta.data$Timepoint[Lupus.combined@meta.data$Sample =="PPQ901 V3" | Lupus.combined@meta.data$Sample =="AAA092 V3" | Lupus.combined@meta.data$Sample =="FTS963 V3"] <- "post-treatment"
+
+DimPlot(Lupus.combined, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 2.5, group.by = 'Timepoint')
+
+table(Lupus.combined@meta.data$Timepoint,Lupus.combined@meta.data$predicted.celltype.l2)
+
+remove(All.BCRs,All.TCRs,BCR1,BCR2,BCR3,BCRcombined,Cluster19,Lupus.combined.BCR,TCR1,TCR2,TCR3,TCRcombined)
+
+
+# Note: The clonal frequencies are not correct at the moment. At the moment, frequency calculation does not take time points into account.
+# In other words, (1) if we have a clone with frequency "10", some cells from this clone may come from the first time point, while others may come from
+# the second time point. Also, (2) the frequency calculation was done before kicking out doublets and so on.
+# The first point (1) can be shown for example by this example:
+my.max <- function(x) ifelse( !all(is.na(x)), max(x, na.rm=T), NA)
+my.max(Lupus.combined@meta.data$Frequency_TCR)
+table(Lupus.combined@meta.data$Timepoint[Lupus.combined@meta.data$Frequency_TCR==my.max(Lupus.combined@meta.data$Frequency_TCR)],
+      Lupus.combined@meta.data$Frequency_TCR[Lupus.combined@meta.data$Frequency_TCR==my.max(Lupus.combined@meta.data$Frequency_TCR)])
+
+# First I am removing remaining cells for which we don't know the sample ID (at this point, these are cells for which we know the patient but not
+# the timepoint.)
+table(Lupus.combined@meta.data$Timepoint,useNA = "always")
+table(Lupus.combined@meta.data$Sample,useNA = "always")
+Lupus.combined <- subset(Lupus.combined,subset = Sample != "Unknown")
+
+# So I basically need to re-calculate the clonal frequencies.
+#Lupus.combined <- Lupus.combined.save
+Lupus.combined@meta.data <- Lupus.combined@meta.data %>% group_by(Timepoint, CTaa_TCR) %>% add_count(CTaa_TCR,name = "updated.frequency_TCR") %>% ungroup()
+Lupus.combined@meta.data <- as.data.frame(Lupus.combined@meta.data)
+rownames(Lupus.combined@meta.data) <- Lupus.combined@meta.data$Row.names
+
+Lupus.combined@meta.data <- Lupus.combined@meta.data %>% group_by(Timepoint, CTaa_BCR) %>% add_count(CTaa_BCR,name = "updated.frequency_BCR") %>% ungroup()
+Lupus.combined@meta.data <- as.data.frame(Lupus.combined@meta.data)
+rownames(Lupus.combined@meta.data) <- Lupus.combined@meta.data$Row.names
+
+table(Lupus.combined@meta.data$updated.frequency_TCR)
+table(Lupus.combined@meta.data$updated.frequency_BCR)
+
+# Those cells that have no TCR or BCR assigned (NA) are also counted in the updated.frequency column. I am manually setting them to NA. 
+# I do this by setting those with the highest updated.frequency to NA, twice in a row.
+Lupus.combined@meta.data$updated.frequency_TCR[Lupus.combined@meta.data$updated.frequency_TCR==my.max(Lupus.combined@meta.data$updated.frequency_TCR)] <- NA
+Lupus.combined@meta.data$updated.frequency_TCR[Lupus.combined@meta.data$updated.frequency_TCR==my.max(Lupus.combined@meta.data$updated.frequency_TCR)] <- NA
+
+Lupus.combined@meta.data$updated.frequency_BCR[Lupus.combined@meta.data$updated.frequency_BCR==my.max(Lupus.combined@meta.data$updated.frequency_BCR)] <- NA
+Lupus.combined@meta.data$updated.frequency_BCR[Lupus.combined@meta.data$updated.frequency_BCR==my.max(Lupus.combined@meta.data$updated.frequency_BCR)] <- NA
+
+# Do the NAs in the original and the updated.frequency match? - Yes as can be seen below.
+nrow(Lupus.combined@meta.data)
+sum(is.na(Lupus.combined@meta.data$Frequency_TCR)==is.na(Lupus.combined@meta.data$updated.frequency_TCR))
+sum(is.na(Lupus.combined@meta.data$Frequency_BCR)==is.na(Lupus.combined@meta.data$updated.frequency_BCR))
+```
+
+## Save .rds file
+```{r save .rds, eval=FALSE}
+# At this point, the dataset is prepared for further analysis.
+# I am saving the Lupus.combined object at this point to enable fast loading.
+saveRDS(Lupus.combined, file = paste0(path.files, "Lupus.combined_dc.rds"))
+```
+

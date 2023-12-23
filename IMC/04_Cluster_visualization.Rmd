@@ -1,0 +1,449 @@
+---
+title: "celltype_classification_new_classifier"
+author: "Tobias Hoch"
+date: "2020-07-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+# Preparations
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, message= FALSE, root.dir = ".")
+```
+
+# Libraries
+
+```{r libs}
+library(tidyverse)
+library(SingleCellExperiment)
+library(cytomapper)
+library(stringr)
+library(CATALYST)
+library(readxl)
+```
+
+# Setup
+```{r paths}
+#Clear R's memory
+rm(list=ls())
+
+path.data <- "../Data/cpout_3pix2/"
+path.files <- "../R_Files/cpout_3pix2/"
+path.out <- "../R_out/cpout_3pix2/"
+
+sce = readRDS(file = paste0(path.files, "sce_3pix2_subclustered.rds"))
+colData(sce) %>% as.data.frame()
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+colvec_ct <- met.brewer("Signac", 19)[c(1, 4:6, 8, 10, 13, 16:19)]
+names(colvec_ct) <- ct
+
+collist_ct <- c(Tregs = "#FBE183",
+                                      `memory CD4 T cells` = "#F78C09",
+                                      `memory CD8 T cells` = "#DC4D35",
+                                      `CD8 Temra` = "#B23A3F",
+                                      Macrophages = "#DE5A7C",
+                                      cDCs = "#E78E97",
+                                      `Mast cells` = "#A26296",
+                                      Fibroblasts = "#2A6494",
+                                      Endothelium = "#25868D",
+                                      Epidermis = "#47A573",
+                                      `Smooth muscle cells` = "#92C051")
+```
+
+
+# Read the data, masks and pixel information (IMC images)
+
+```{r load images, eval=FALSE}
+all_mask <- loadImages(x = paste0(path.data, "masks/"),pattern = "_ilastik_s2_Probabilities_mask.tiff")
+all_pixel <- loadImages(x = paste0(path.data, "images/"), pattern = "_full.tiff")
+```
+
+# add the respective ImageNumber as in the sce object to the all_mask object
+
+```{r match image numbers to mask, eval=FALSE}
+# we load the metadata for the images.
+image_mat <- as.data.frame(read.csv(file = paste0(path.data, "Image.csv"),stringsAsFactors = FALSE))
+
+cur_df <- data.frame(cellmask = image_mat$FileName_cellmask,
+                     ImageNumber = image_mat$ImageNumber)
+
+# we set the rownames of the extracted data to be equal to the names of all_masks
+rownames(cur_df) <- gsub(pattern = ".tiff",replacement = "",image_mat$FileName_cellmask)
+
+# we add the extracted information via mcols in the order of the all_masks object
+mcols(all_mask) <- cur_df[names(all_mask),]
+```
+
+# add the respective ImageNumber as in the sce object to the all_pixel object
+
+```{r match image numbers to pixels, eval=FALSE}
+# we load the metadata for the images.
+image_mat <- as.data.frame(read.csv(file = paste0(path.data, "Image.csv"),stringsAsFactors = FALSE))
+
+# we extract only the FileNames of the stacks as they are in the all_pixel object
+cur_df <- data.frame(cellmask = image_mat$FileName_FullStack,
+                     ImageNumber = image_mat$ImageNumber)
+
+# we set the rownames of the extracted data to be equal to the names of all_pixel
+rownames(cur_df) <- gsub(pattern = ".tiff",replacement = "",image_mat$FileName_FullStack)
+
+# we add the extracted information via mcols in the order of the all_pixel object
+mcols(all_pixel) <- cur_df[names(all_pixel),]
+```
+
+# scale the masks
+
+```{r scale masks, eval=FALSE}
+all_mask <- scaleImages(all_mask,2^16-1)
+all_pixel <- scaleImages(all_pixel,2^16-1)
+```
+
+# add the channel names
+
+```{r add channel names, eval=FALSE}
+panel_meta <- read.csv(file = paste0(path.data, "panel.csv"), sep= ",",  stringsAsFactors = FALSE )
+
+# sort the channel names accordingly to the stack
+# extract metal masshttp://127.0.0.1:5322/#
+panel_meta$Metal.Number <-  str_extract(string = panel_meta$Metal.Tag, pattern = "[0-9]+")
+panel_meta$Metal.Number <- as.numeric(panel_meta$Metal.Number) #convert metal number to numeric for sorting
+# order according to  metal mass
+panel_meta = panel_meta[order(panel_meta$Metal.Number),]
+
+channelNames(all_pixel) <- rowData(sce)[,"clean_target"]
+
+saveRDS(all_mask, paste0(path.files, "all_mask.rds"))
+saveRDS(all_pixel, paste0(path.files, "all_pixel.rds"))
+```
+
+# Plotting
+## preparations
+```{r prepare plotting}
+# #not necessary here, but this would be the way to subset masks and SCE objects
+# curmask <- all_mask["slide 4_lupus_211_s0_a1_ac_ilastik_s2_Probabilities_mask"]
+# subsce <- filterSCE(sce, sample_id == 1)
+
+all_mask <- readRDS(paste0(path.files, "all_mask.rds"))
+all_pixel <- readRDS(paste0(path.files, "all_pixel.rds"))
+```
+
+## Plotting cell masks
+plotting cell masks colored by cluster id. first all on one page, then one per page.
+```{r plot masks, fig.width=16, fig.height=9, eval=FALSE}
+#pdf("~/Desktop/plotCells_3pix2_k15_prim.pdf", height = 9, width = 16, onefile = TRUE)
+plotCells(mask = all_mask, object = sce,
+            cell_id = "CellNumber", img_id = "ImageNumber", 
+            colour_by = "subclusters", exprs_values = "exprs", margin = 3, display = "all", legend = list(colour_by.legend.cex = 0.5))
+plotCells(mask = all_mask, object = sce,
+            cell_id = "CellNumber", img_id = "ImageNumber", 
+            colour_by = "subclusters", exprs_values = "exprs", margin = 3, display = "single", legend = list(colour_by.legend.cex = 0.75))
+#dev.off()
+```
+
+
+```{r}
+pdf(paste0(path.out, "Y_plotPixels_3pix2_sub_Test.pdf"), height = 9, width = 16, onefile = TRUE)
+images <- c(1)
+
+plotPixels(all_pixel[images,], mask = all_mask[images,], object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD3", "CD4", "CD25", "Ecadherin", "CollagenI", "CD163"),
+            bcg = list(CD3 = c(0,30,1),
+                       CD4 = c(0,10,1),
+                       CD25 = c(0,100,1),
+                       Ecadherin = c(0,10,1),
+                       #DNA1 = c(0,20,1),
+                       CollagenI = c(0,5,1),
+                       CD163 = c(0,10,1)),
+           colour = list(CD3 = c("black", "red"),
+                      CD4 = c("black", "blue"),
+                      CD25 = c("black", "green"),
+                      Ecadherin = c("black", "yellow"),
+                      #DNA1 = c("black", "white"),
+                      CollagenI = c("black", "goldenrod3"),
+                      CD163 = c("black", "gray75"),
+                      subclusters = collist_ct),
+           outline_by = "subclusters", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           #image_title = list(text = c(paste(images))),
+           image_title = NULL,
+           scale_bar = NULL
+           )
+dev.off()
+```
+```{r}
+pdf(paste0(path.out, "Y_plotPixels_3pix2_sub_Test2.pdf"), height = 9, width = 16, onefile = TRUE)
+images <- c(2)
+
+plotPixels(all_pixel[images,], mask = all_mask[images,], object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD3", "CD4", "CD25", "Ecadherin", "CollagenI", "CD163"),
+            bcg = list(CD3 = c(0,30,1),
+                       CD4 = c(0,10,1),
+                       CD25 = c(0,5,1),
+                       Ecadherin = c(0,10,1),
+                       #DNA1 = c(0,20,1),
+                       CollagenI = c(0,5,1),
+                       CD163 = c(0,10,1)),
+           colour = list(CD3 = c("black", "red"),
+                      CD4 = c("black", "blue"),
+                      CD25 = c("black", "green"),
+                      Ecadherin = c("black", "yellow"),
+                      #DNA1 = c("black", "white"),
+                      CollagenI = c("black", "goldenrod3"),
+                      CD163 = c("black", "gray75"),
+                      subclusters = collist_ct),
+           outline_by = "subclusters", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           #image_title = list(text = c(paste(images))),
+           image_title = NULL,
+           scale_bar = NULL
+           )
+dev.off()
+```
+
+```{r}
+pdf(paste0(path.out, "Y_plotPixels_3pix2_sub_Test3.pdf"), height = 9, width = 16, onefile = TRUE)
+images <- c(3)
+
+plotPixels(all_pixel[images,], mask = all_mask[images,], object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD3", "CD4", "CD25", "Ecadherin", "CollagenI", "CD163"),
+            bcg = list(CD3 = c(0,30,1),
+                       CD4 = c(0,10,1),
+                       CD25 = c(0,5,1),
+                       Ecadherin = c(0,10,1),
+                       #DNA1 = c(0,20,1),
+                       CollagenI = c(0,5,1),
+                       CD163 = c(0,10,1)),
+           colour = list(CD3 = c("black", "red"),
+                      CD4 = c("black", "blue"),
+                      CD25 = c("black", "green"),
+                      Ecadherin = c("black", "yellow"),
+                      #DNA1 = c("black", "white"),
+                      CollagenI = c("black", "goldenrod3"),
+                      CD163 = c("black", "gray75"),
+                      subclusters = collist_ct),
+           outline_by = "subclusters", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           #image_title = list(text = c(paste(images))),
+           image_title = NULL,
+           scale_bar = NULL
+           )
+dev.off()
+```
+
+
+```{r}
+rowData(sce)$Target
+plotPixels(curimg,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("Ecadherin", "Vimentin", "CD45", "DNA1", "DNA2"),
+            bcg = list(Ecadherin = c(0,10,1),
+                       Vimentin = c(0,10,1),
+                       CD45 = c(0,10,1),
+                       DNA1 = c(0,5,1),
+                       DNA2 = c(0,5,1)),
+           colour = list(Ecadherin = c("black", "blue"),
+                      Vimentin = c("black", "green"),
+                      CD45 = c("black", "red"),
+                      DNA1 = c("black", "white"),
+                      DNA2 = c("black", "white")),
+           display = "single",
+           scale_bar = list(cex = 0.000001),
+           image_title = list(position = "bottomright",
+                              cex = 0.00000001))
+
+plotPixels(curimg, mask = curmask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("Ecadherin", "Vimentin", "CD45", "DNA1", "DNA2"),
+            bcg = list(Ecadherin = c(0,10,1),
+                       Vimentin = c(0,10,1),
+                       CD45 = c(0,10,1),
+                       DNA1 = c(0,5,1),
+                       DNA2 = c(0,5,1)),
+           colour = list(Ecadherin = c("black", "blue"),
+                      Vimentin = c("black", "green"),
+                      CD45 = c("black", "red"),
+                      DNA1 = c("black", "white"),
+                      DNA2 = c("black", "white")),
+           display = "single",
+           scale_bar = list(cex = 0.000001),
+           image_title = list(position = "bottomright",
+                              cex = 0.00000001),
+           outline_by = "sample_id")
+
+plotPixels(curimg,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("Ecadherin", "Vimentin", "CollagenI", "DNA1", "DNA2"),
+            bcg = list(Ecadherin = c(0,10,1),
+                       Vimentin = c(0,10,1),
+                       CollagenI = c(0,5,1),
+                       DNA1 = c(0,5,1),
+                       DNA2 = c(0,5,1)),
+           colour = list(Ecadherin = c("black", "blue"),
+                      Vimentin = c("black", "green"),
+                      CollagenI = c("black", "red"),
+                      DNA1 = c("black", "white"),
+                      DNA2 = c("black", "white")),
+           display = "single",
+           scale_bar = list(cex = 0.000001),
+           image_title = list(position = "bottomright",
+                              cex = 0.00000001))
+
+plotPixels(curimg, mask = curmask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("Ecadherin", "Vimentin", "CollagenI", "DNA1", "DNA2"),
+            bcg = list(Ecadherin = c(0,10,1),
+                       Vimentin = c(0,10,1),
+                       CollagenI = c(0,5,1),
+                       DNA1 = c(0,5,1),
+                       DNA2 = c(0,5,1)),
+           colour = list(Ecadherin = c("black", "blue"),
+                      Vimentin = c("black", "green"),
+                      CollagenI = c("black", "red"),
+                      DNA1 = c("black", "white"),
+                      DNA2 = c("black", "white")),
+           display = "single",
+           scale_bar = list(cex = 0.000001),
+           image_title = list(position = "bottomright",
+                              cex = 0.00000001),
+           outline_by = "sample_id")
+```
+
+## Plotting pixels
+coloring pixels by a set of markers (I find 3 is the max in RGB colors, try to avoid mixed colors: e.g. yellow cannot be distinguished from overlapping green and red). Outlining by cluster id.
+```{r plot pixels, eval=FALSE}
+pdf(paste0(path, "R_out/plotpixels_clusters_endothel.pdf"), height = 9, width = 16, onefile = TRUE)
+plotPixels(all_pixel, mask = all_mask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("HLADR", "CD141", "CD45", "DNA1"),
+            bcg = list(HLADR = c(0,10,1),
+                       CD141 = c(0,30,1),
+                       CD45 = c(0,15,1),
+                       DNA1 = c(0,10,1)),
+           colour = list(HLADR = c("black", "red"),
+                      CD141 = c("black", "green"),
+                      CD45 = c("black", "blue"),
+                      DNA1 = c("black", "white")),
+           outline_by = metak, display = "single", legend = list(colour_by.legend.cex = 0.2,
+                                                                 outline_by.legend.cex = 0.7),
+           image_title = list(text = c(paste(seq(1:length(all_pixel))))))
+dev.off()
+
+pdf(paste0(path, "R_out/plotpixels_clusters_leukocytes.pdf"), height = 9, width = 16, onefile = TRUE)
+plotPixels(all_pixel, mask = all_mask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("HLADR", "CD3", "CD45", "DNA1"),
+            bcg = list(HLADR = c(0,10,1),
+                       CD3 = c(0,30,1),
+                       CD45 = c(0,15,1),
+                       DNA1 = c(0,10,1)),
+           colour = list(HLADR = c("black", "red"),
+                      CD3 = c("black", "green"),
+                      CD45 = c("black", "blue"),
+                      DNA1 = c("black", "white")),
+           outline_by = metak, display = "single", legend = list(colour_by.legend.cex = 0.2,
+                                                                 outline_by.legend.cex = 0.7),
+           image_title = list(text = c(paste(seq(1:length(all_pixel))))))
+dev.off()
+```
+Notes on clusters plotted on pixels: When debating whether k can be reduced from 20 to 18 in the primary clustering, I mentioned cluster 13 which is merged into cluster 16. Checking the pixel information, cluster 16 (m20) should not be merged with cluster 13, since they do not share the APC markers. 
+
+## cluster10
+This should be revisited: Is cluster 10 endothelial? A quick look suggests it might well be, just the markers are a lot weaker than in the "proper" endothel cluster. For now, I termed them "putative endothel".
+
+# Cluster merging and annotation
+In our experience, manual merging of clusters leads to slightly different results compared to an algorithm with a specified number of clusters. In order to detect somewhat rare populations, some level of over-clustering is necessary so that the more subtle populations become separated from the main populations. In addition, merging can always follow an over-clustering step, but splitting of existing clusters is not generally feasible.
+```{r merging, fig.height=5, fig.width=8}
+(merging_table1 <- read_excel(paste0(path, "merged_clusters_primary.xlsx")))
+
+#apply manual merging
+sce <- mergeClusters(sce, k = metak, table = merging_table1, id = "merging1")
+
+code <- cluster_codes(sce)[,c("som100", "merging1")]
+colnames(code) <- c("som100", "primary_clustering")
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sce) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+unique(colData(sce)$primary_clustering)
+plotDR(sce, "UMAP", color_by = "merging1") + ggtitle("UMAP ld IL-2 in SLE IMC") + theme(plot.title = element_text(hjust = 0.5)) + scale_color_brewer(palette = "Set1")
+#Save merged SCEobject
+saveRDS(sce,file = "../../C - IICT SLE IL-2/I - Imaging mass cytometry/SCEobjects/sce_2_3pix2_clustered_merged.rds")
+```
+
+
+
+```{r plot pixels merged}
+pdf(paste0(path, "R_out/plotcells_merged1.pdf"), height = 9, width = 16, onefile = TRUE)
+
+plotCells(mask = all_mask, object = sce,
+            cell_id = "CellNumber", img_id = "ImageNumber", 
+            colour_by = "primary_clustering", exprs_values = "exprs", margin = 3, display = "single", legend = list(colour_by.legend.cex = 0.75))
+dev.off()
+
+pdf(paste0(path, "R_out/plotpixels_clusters_Tcells.pdf"), height = 9, width = 16, onefile = TRUE)
+plotPixels(all_pixel, mask = all_mask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD3", "CD4", "CD8", "DNA1"),
+            bcg = list(CD3 = c(0,40,1),
+                       CD4 = c(0,50,1),
+                       CD8 = c(0,50,1),
+                       DNA1 = c(0,20,1)),
+           colour = list(CD3 = c("black", "red"),
+                      CD4 = c("black", "blue"),
+                      CD8 = c("black", "green"),
+                      DNA1 = c("black", "white")),
+           outline_by = "primary_clustering", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           image_title = list(text = c(paste(seq(1:length(all_pixel))))))
+dev.off()
+
+pdf(paste0(path, "R_out/plotpixels_clusters_structural.pdf"), height = 9, width = 16, onefile = TRUE)
+plotPixels(all_pixel, mask = all_mask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD45", "SMA", "CD141", "DNA1"),
+            bcg = list(CD45 = c(0,40,1),
+                       SMA = c(0,5,1),
+                       CD141 = c(0,30,1),
+                       DNA1 = c(0,20,1)),
+           colour = list(CD45 = c("black", "red"),
+                      SMA = c("black", "blue"),
+                      CD141 = c("black", "green"),
+                      DNA1 = c("black", "white")),
+           outline_by = "primary_clustering", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           image_title = list(text = c(paste(seq(1:length(all_pixel))))),
+           scale_bar = NULL)
+dev.off()
+
+pdf(paste0(path, "R_out/plotpixels_clusters_APCs.pdf"), height = 9, width = 16, onefile = TRUE)
+plotPixels(all_pixel, mask = all_mask, object = sce,
+           img_id = "ImageNumber", cell_id = "CellNumber",
+           colour_by = c("CD45", "HLADR", "CD163", "DNA1"),
+            bcg = list(CD45 = c(0,40,1),
+                       HLADR = c(0,10,1),
+                       CD163 = c(0,10,1),
+                       DNA1 = c(0,10,1)),
+           colour = list(CD45 = c("black", "red"),
+                      HLADR = c("black", "blue"),
+                      CD163 = c("black", "green"),
+                      DNA1 = c("black", "white")),
+           outline_by = "primary_clustering", display = "single", legend = list(colour_by.legend.cex = 0.75,
+                                                                         colour_by.title.cex = 2),
+           image_title = list(text = c(paste(seq(1:length(all_pixel))))),
+           scale_bar = NULL)
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+

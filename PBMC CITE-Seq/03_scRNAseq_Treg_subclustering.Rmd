@@ -1,0 +1,256 @@
+---
+title: "02_scRNAseq_Downstream_Jan"
+author: "docaspar"
+date: "11/1/2021"
+output: 
+  pdf_document:
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+# Load Libraries
+```{r libs, message=FALSE}
+getwd()
+
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(umap)
+library(cowplot)
+library(dplyr)
+library(data.table)
+library(pals)
+library(MetBrewer)
+library(ggpubr)
+library(flowCore)
+library(Rphenograph)
+library(FlowSOM)
+library(ConsensusClusterPlus)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(readxl)
+library(MetBrewer)
+library(ggrepel)
+library(MatrixGenerics)
+library(msigdbr)
+library(fgsea)
+library(ggpubr)
+library(xlsx)
+library(readr)
+library(clustree)
+```
+
+# Load Data
+```{r load data, message=FALSE}
+getwd()
+rm(list = ls())
+
+path.files <- "../R_files/"
+path.out <- "../R_out/Treg/"
+
+lupus <- readRDS(file = paste0(path.files, "lupus_clustered_k27_oneshot.rds"))
+
+colvec <- met.brewer("Monet",n=20)[c(12,10)]
+DefaultAssay(lupus) <- "integrated.adt"
+
+#load functions
+source("scRNA_functions.R")
+```
+
+# Check data
+```{r}
+plot <- clusterplusfeature(lupus, cluster_column = "primary", dim = "umap")
+```
+
+# Old umap
+i havent overwitten the old rds object yet, therefore i used this object to recreate a plot using original umap coordinates for the manuscript.
+```{r}
+raster_pdf(paste0("../R_out/Primary/", "03a_merging_27_oneshot_labelless.pdf"), height = 9, width = 11, res = 200)
+plot_DR(x = lupus, color_by = "primary", dim = "umap", hml = FALSE, cll = FALSE)
+dev.off()
+```
+
+# Tregs
+## Filtering and DE analysis
+```{r}
+# tregs <- lupus[,lupus@meta.data$primary == "Tregs"]
+# 
+# tregs <- FindVariableFeatures(tregs, method = "vst", nfeatures = 2000, assay = "integrated.adt")
+# VariableFeatures(tregs)
+# 
+# tregs <- RunPCA(tregs, features = VariableFeatures(tregs), assay = "integrated.adt", reduction.name = "tregs.pca")
+# VizDimLoadings(tregs, dims = 1:2, reduction = "tregs.pca")
+# ElbowPlot(tregs)
+# 
+# tregs <- FindNeighbors(tregs, dims = 1:15, assay = "integrated.adt", reduction = "tregs.pca")
+# tregs <- FindClusters(tregs, resolution = 0.5)
+# 
+# tregs <- RunUMAP(tregs, dims = 1:15, assay = "integrated.adt", reduction = "tregs.pca", reduction.name = "tregs.adt.umap")
+# 
+# clusterplusfeature(tregs, protein.features = VariableFeatures(tregs)[1:25], rna.features = "ZBTB7A-RNA", cluster_column = "integrated.adt_snn_res.0.5", dim = "tregs.adt.umap", assay.rna = "RNA")
+# 
+# clusterplusfeature(tregs, rna.features = rownames(tregs@assays$RNA)[grepl("ZBTB", rownames(tregs@assays$RNA))], cluster_column = "integrated.adt_snn_res.0.5", dim = "tregs.adt.umap", assay.rna = "RNA")
+```
+
+
+
+Here, we are analyzing Tregs as a whole, i.e. Tregs pre and post treatment.
+```{r tregs, fig.width=20}
+#Filter Tregs from whole PBMCs based on primary clustering.
+tregs <- lupus[,lupus@meta.data$primary == "Tregs"]
+
+
+#Filter treg cell ids pre and post treatment 
+Pre_treatments <- rownames(tregs@meta.data[tregs@meta.data$Timepoint=="pre-treatment",])
+Post_treatments <- rownames(tregs@meta.data[tregs@meta.data$Timepoint=="post-treatment",])
+
+#DGE for Tregs pre and post treatment; print all with log2FC > 0.25
+Tregs.treatment.RNA.markers <- as.data.frame(FindMarkers(tregs, ident.1 = Post_treatments, ident.2 = Pre_treatments, assay = "RNA", logfc.threshold = 0))
+
+Tregs.treatment.RNA.markers[abs(Tregs.treatment.RNA.markers$avg_log2FC) > 0.25,]
+write.xlsx(Tregs.treatment.RNA.markers[Tregs.treatment.RNA.markers$avg_log2FC > 0.25,], paste0(path.out, "04_Treg_V3vsV2_RNA.xlsx"))
+
+#Differential protein expression for Tregs pre and post treatment; print all with log2FC > 0.25
+Tregs.treatment.Protein.markers <- as.data.frame(FindMarkers(tregs ,ident.2 = Pre_treatments, ident.1 = Post_treatments, assay = "Protein", logfc.threshold = 0))
+Tregs.treatment.Protein.markers
+write.xlsx(Tregs.treatment.Protein.markers, paste0(path.out, "05_Treg_V3vsV2_Protein.xlsx"))
+
+
+
+# #Import Gene Sets from the Molecular Signature Data Base (MSigDB)
+
+hallmarks<- msigdbr(species = "Homo sapiens", category = "H")
+# immunesigdb<- msigdbr(species = "Homo sapiens", category = "C7", subcategory = "IMMUNESIGDB")
+# kegg<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "KEGG")
+# reactome<- msigdbr(species = "Homo sapiens", category = "C2", subcategory = "REACTOME")
+# go<- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP")
+# 
+# immproc <- read_delim(paste0(path.files, "GO_term_summary_20220531_063040.txt"), 
+#     delim = "\t", escape_double = FALSE, 
+#     trim_ws = TRUE)
+# immproc <- immproc$`Annotated Term` %>% toupper() %>% paste("GOBP", .) %>% str_replace_all(" ", "_")
+# go <- go[go$gs_name %in% immproc,]
+# 
+# #pathways <- c("KEGG_LEUKOCYTE_TRANSENDOTHELIAL_MIGRATION", "KEGG_CELL_CYCLE", "KEGG_JAK_STAT_SIGNALING_PATHWAY")
+# 
+# keggout <- run_fgsea(Tregs.treatment.RNA.markers, gene_set = kegg, suffix = "-RNA", sampleSize = 1000)
+# #write.xlsx(keggout, paste0(path.out, "Treg_KEGG.xlsx"))
+# 
+hallmarkout<- run_fgsea(Tregs.treatment.RNA.markers, gene_set = hallmarks, suffix = "-RNA", sampleSize = 1000)
+# #write.xlsx(hallmarkout, paste0(path.out, "Treg_Hallmarks.xlsx"))
+# 
+# goout <- run_fgsea(Tregs.treatment.RNA.markers, gene_set = go, suffix = "-RNA", sampleSize = 1000)
+# #write.xlsx(goout, paste0(path.out, "Treg_GOimmuneterms.xlsx"))
+# 
+# #fgseares[fgseares$pathway == "KEGG_LEUKOCYTE_TRANSENDOTHELIAL_MIGRATION",]
+# 
+pdf(paste0(path.out, "Treg_KEGG_Enrichmentplots.pdf"), height = 5, width = 8, onefile = TRUE)
+plot_fgsea(Tregs.treatment.RNA.markers, gene_set = hallmarks, suffix = "-RNA", sampleSize = 1000, top_n = 5)
+gsea_barplot(hallmarkout, p_max = 0.1)
+dev.off()
+
+
+pf <- c("IL2RA-Protein", "IL7R-Protein", "ITGB7-Protein", "PDCD1-Protein", "CTLA4-Protein")
+rf <- c("IL2RA-RNA", "FOXP3-RNA", "ITGA4-RNA", "ITGB7-RNA", "SELPLG-RNA", "TGFB1-RNA", "IL10-RNA", "ZBTB20-RNA", "EBI3-RNA", "IDO1-RNA", "GZMB-RNA", "AREG-RNA", "ZNF683-RNA", "CCR4-RNA", "CCR8-RNA", "CXCR4-RNA", "CCR1-RNA", "CCR5-RNA", "CCR6-RNA", "TCF7-RNA", "CCR7-RNA", "IKZF2-RNA", "IL2-RNA", "IL4-RNA", "IL6-RNA", "CXCL8-RNA", "IL15-RNA", "IL18-RNA", "IL21-RNA", "IL32-RNA")
+
+
+# The plot_features function was damaged during the updates of scRNA_functions.R. fix functions or adjust inputs
+# pdf(paste0(path.out, "06_Treg_featureplots_by_timepoint.pdf"), height = 9, width = 16, onefile = TRUE)
+# plot_pbfeatures(tregs, pf)
+# plot_features2(tregs, pf, rf, protein.stats = Tregs.treatment.Protein.markers, rna.stats = Tregs.treatment.RNA.markers, evencells = TRUE)
+# fractions(tregs, pf, rf)
+# dev.off()
+```
+
+## Subclustering
+Here, we look at Treg subclusters. First, we cluster the Tregs, then we compare the different clusters to each other
+```{r tregs subclustering, fig.width=16, fig.height=9}
+#recluster Tregs
+#protein_features <- c("HLA-DRA-Protein", "IL2RA-Protein", "IL7R-Protein", "PTPRC-Protein", "CCR7-Protein", "PECAM1-Protein", "CD27-Protein", "PDCD1-Protein", "CD38-Protein") #this set of proteins contains cd27, which was not included in the flow panel. to make the cluster
+
+#protein_features <- c("CCR7-Protein", "CD38-Protein", "PECAM1-Protein", "PTPRC-Protein", "PDCD1-Protein", "HLA-DRA-Protein", "IL2RA-Protein", "IL7R-Protein", "ICOS-Protein")
+protein_features <- c("CD38-Protein", "HLA-DRA-Protein", "PTPRC-Protein")
+rna_features <- c("FOXP3-RNA", "MKI67-RNA")
+
+#Run UMAP for Tregs with selected protein features
+# tregs <- RunUMAP(tregs,  features = protein_features, assay = "integrated.adt", reduction.name = "adt.umap", reduction.key = "ADT.UMAP_")
+# 
+# pdf(paste0(path.out, "07_Treg_subclustering.pdf"), height = 9, width = 16, onefile = TRUE)
+# ## Try FlowSOM clustering ## Results in worse clusters for CD38 and HLADR than phenograph
+# # tregs <- flowsom(tregs, protein_features, maxK = 15)
+# # clusterplusfeature(x = tregs, pf = protein_features, rf = rna_features, dim = "umap", cluster_column = "flowsom")
+# 
+# ## Try phenograph clustering
+# tregs <- phenograph(tregs, pf = protein_features, k = 20) #k = 100 with original clustering, i.e. with CD27
+# plot <- clusterplusfeature(x = tregs, protein.features = protein_features, rna.features = rna_features, dim = "adt.umap", cluster_column = "pheno")
+# 
+# ## Create density plot by timepoint
+# a <- cbind(tregs@reductions$umap@cell.embeddings %>% as.data.frame(), tregs@meta.data) %>% as.data.frame()
+# a$Timepoint <- factor(a$Timepoint, levels = c("pre-treatment", "post-treatment"))
+# ggplot(a, aes(x = UMAP_1, y = UMAP_2))+
+#   geom_density_2d(aes(col = Timepoint), linemitre = 100, na.rm = TRUE)+
+#   theme_bw()+
+#   facet_wrap("Timepoint")+
+#   theme(plot.title = element_text(hjust = 0.5),
+#         strip.background = element_blank())+
+#   scale_color_manual(values = colvec)+
+#   scale_fill_manual(values = colvec)+
+#   scale_y_continuous(limits = c(-7.5,7.5))+
+#   scale_x_continuous(limits = c(-14,13))+
+#   labs(x = "UMAP 1", y = "UMAP 2", col = "Time point")
+# dev.off()
+
+#Fully unsupervised approach using WNN clustering with Protein markers
+tregs <- FindNeighbors(tregs, reduction = "pca.adt", dims = 1:18, assay = "integrated.adt")
+tregs <- FindClusters(tregs, resolution = 2.8, graph.name = "integrated.adt_nn")
+tregs <- RunUMAP(tregs, dims = 1:18, assay = "integrated.adt", reduction = "pca.adt", reduction.name = "wnnadt.umap", reduction.key = "wnnadt.umap_")
+
+pdf(paste0(path.out, "07_Treg_wnn_subclustering.pdf"), height = 9, width = 16, onefile = TRUE)
+source("scRNA_functions.R")
+clusterplusfeature(tregs, cluster_column = "integrated.adt_nn_res.2.8", dim = "wnnadt.umap", protein.features = protein_features, rna.features = rna_features)
+
+a <- cbind(tregs@reductions$wnnadt.umap@cell.embeddings %>% as.data.frame(), tregs@meta.data) %>% as.data.frame()
+a$Timepoint <- factor(a$Timepoint, levels = c("pre-treatment", "post-treatment"))
+ggplot(a, aes(x = wnnadtumap_1, y = wnnadtumap_2))+
+  geom_density_2d(aes(col = Timepoint), linemitre = 100, na.rm = TRUE)+
+  theme_bw()+
+  facet_wrap("Timepoint")+
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  scale_y_continuous(limits = c(-7.5,7.5))+
+  scale_x_continuous(limits = c(-14,13))+
+  labs(x = "UMAP 1", y = "UMAP 2", col = "Time point")
+dev.off()
+```
+
+## Subcluster merging
+At the moment, the 6 clusters from phenograph are not further merged, the clustering seems adequate as it is. To maintain the pipeline structure, the clusters are "merged" into the same clusters as they already are.
+```{r tregs subclustering}
+#Merging
+#(merging_tregs <- read_excel(paste0(path.files, "cluster_annotation_tregs_v2.xlsx")))
+#(merging_tregs <- read_excel(paste0(path.files, "cluster_annotation_tregs_v3.xlsx")))
+(merging_tregs <- read_excel(paste0(path.files, "cluster_annotation_tregs_v4.xlsx")))
+#merging_tregs <- data_frame("seurat_clusters" = 1:14, "secondary" = 1:14)
+tregs <- merge_clusters(tregs, 
+                        cluster_column = "integrated.adt_nn_res.2.8", 
+                        merging_table = merging_tregs, 
+                        merging_name = "Treg_phenotpe",
+                        levels = c("CD38+ HLA-DR+ Tregs", "CD38+ Tregs", "HLA-DR+ Tregs", "resting Tregs", "naive Tregs"))
+
+pdf(paste0(path.out, "08_Treg_merging.pdf"), height = 9, width = 16, onefile = TRUE)
+p1 <- clusterplusfeature(x = tregs, pf = c(protein_features, "PECAM1-Protein"), dim = "wnnadt.umap", cluster_column = "Treg_phenotpe", ncol = 2)
+p1 + scale_color_manual(values = brewer.paired(12)[c(12, 8, 2, 4, 6)])
+dev.off()
+```
+
+# Save subclustered Tregs
+```{r save rds}
+saveRDS(tregs, file = paste0(path.files, "Tregs_subclustered.rds"))
+```
+
+

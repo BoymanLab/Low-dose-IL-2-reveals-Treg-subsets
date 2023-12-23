@@ -1,0 +1,124 @@
+---
+title: "Flow_CATALYST"
+author: "docaspar"
+date: "12/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = ".")
+```
+
+
+
+# Libraries
+```{r libs, message=FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(CATALYST)
+library(flowCore)
+library(xlsx)
+library(readxl)
+library(clustree)
+library(diffcyt)
+library(Rphenograph)
+library(edgeR)
+library(MetBrewer)
+library(ggpubr)
+library(pals)
+library(ComplexHeatmap)
+```
+
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/20220505_Live"
+path.files <- "../Files/"
+path.out <- "../R_out/Unsupervised_10k_final/"
+
+colvec <- met.brewer("Monet",n=20)[c(4,12,10,18,19)]
+```
+
+
+# Create Meta
+This chunk creates the meta data from the file names (list.files())
+```{r create meta, warning=FALSE}
+#create meta
+file.names <- list.files(path.data, pattern = "fcs$")
+md <- data.frame("file_name" = file.names)
+md <- md %>%
+  mutate(copy = file_name) %>%
+  separate(copy, c("export", "well", "patient_id", "condition", "live", "fcs")) %>%
+  dplyr::filter(patient_id != "FMO") %>%
+  dplyr::select(-c("export", "well", "live", "fcs"))
+
+md[!md$condition %in% c("V2", "V3", "V8", "V9"), "condition"] <- "H"
+md <- md %>% mutate("sample_id" = paste(patient_id, condition, sep = "_"))
+md$condition <- as.factor(md$condition)
+md <- md[order(md$condition, md$patient_id),]
+md$sample_id <- factor(md$sample_id, levels = md$sample_id)
+md %>% head()
+```
+
+
+# Create Single Cell Experiment (SCE) object
+Here, we read the .fcs files as a flow set and downsample to 10000 cells per sample.
+Next, we convert the flow set to an SCE object (prepData()) and transform with cofactor 6000.
+To save time, I saved the resulting SCE object. It is imported again in the next chunk.
+```{r create flowset}
+fs <- read.flowSet(md$file_name, path = path.data, transformation = FALSE, truncate_max_range = FALSE)
+
+fsApply(fs, nrow)
+n = 10000
+dsFilt <- sampleFilter(size = n, filterId="dsFilter")
+result <- flowCore::filter(fs, dsFilt)
+
+for(i in 1:length(result)){
+  a <- result@.Data[[i]]@subSet
+  l <- a %>% length()
+  if(n>l){
+    next
+  }
+  set.seed(42)
+  ids <- sample(1:l, n, replace=FALSE) %>% sort()
+  x <- rep(FALSE, l)
+  x[ids] <- TRUE
+  result@.Data[[i]]@subSet <- x
+}
+
+fs.ds <- Subset(fs, result) 
+fsApply(fs.ds, nrow) %>% head()
+remove(fs, a, dsFilt)
+
+panel <- as.data.frame(markernames(fs.ds))
+colnames(panel) <- "antigen"
+panel$channel <- rownames(panel)
+rownames(panel) <- panel$marker_name
+panel$marker_class <- "state"
+
+sce <- prepData(x = fs.ds, md = md, panel = panel, panel_cols = list(channel = "channel",
+        antigen = "antigen"), transform = TRUE, cofactor = 6000, FACS = TRUE)
+
+#Add metadata to SCE
+colData(sce)$cell_id <- 1:nrow(colData(sce))
+rowData(sce)$channel_id <- 1:nrow(rowData(sce))
+
+levels(sce$sample_id)
+```
+
+
+
+# Save SCE
+```{r}
+#Save SCE object
+saveRDS(sce, file = paste0(path.files, "SCE_downsammpled_10k.rds"))
+```
+
+
+# Session Info
+```{r}
+sessionInfo()
+```
+

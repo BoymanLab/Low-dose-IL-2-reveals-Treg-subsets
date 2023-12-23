@@ -1,0 +1,70 @@
+---
+title: "06_IMC_Quantification"
+author: "docaspar"
+date: "1/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+# Load libraries
+```{r libs, message=FALSE}
+library(SingleCellExperiment)
+library(tidyverse)
+library(CATALYST)
+library(scater)
+library(rstudioapi)
+library(readxl)
+```
+
+# Set paths
+```{r set paths}
+rm(list = ls())
+
+setwd(dirname(getActiveDocumentContext()$path))
+
+path.files.3pix2 <- "../R_Files/cpout_3pix2/"
+path.files.batch2 <- "../R_Files/cpout_batch2/"
+path.files.combined <- "../R_Files/cpout_combined/"
+path.out <- "../R_out/cpout_combined/"
+sce1 = readRDS(file = paste0(path.files.3pix2, "sce_3pix2_subclustered.rds"))
+sce2 = readRDS(file = paste0(path.files.batch2, "sce_batch2_subclustered.rds"))
+
+colvec_tp <- met.brewer("Monet",n=20)[c(12,18)]
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+
+#ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDC1", "cDC2", "cDC3", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+```
+
+# Load SCE objects
+```{r load data}
+exprs <- cbind(assay(sce1, "exprs"), assay(sce2, "exprs"))
+counts <- cbind(assay(sce1, "counts"), assay(sce2, "counts"))
+colData(sce2)$ImageNumber <- colData(sce2)$ImageNumber + 17
+colData(sce2)$sample_id <- as.character(colData(sce2)$ImageNumber)
+colData(sce2)$cellID <- paste("cell", colData(sce2)$ImageNumber, colData(sce2)$CellNumber, sep = "_")
+rownames(colData(sce2)) <- colData(sce2)$cellID
+coldata <- rbind(colData(sce1)[colnames(colData(sce1))], colData(sce2)[colnames(colData(sce1))])
+
+sce <- SingleCellExperiment(assays = list(counts = counts, exprs = exprs), colData = coldata, rowData = rowData(sce1))
+colData(sce)$sample_id <- factor(colData(sce)$ImageNumber, levels = colData(sce)[order(colData(sce)$condition), c("sample_id", "condition")] %>% as.data.frame() %>% distinct() %>% .$sample_id %>% as.character() %>% as.numeric())
+
+exprs <- cbind(assay(sce1, "exprs")  %>% t() %>% scale() %>% t(), assay(sce2, "exprs") %>% t() %>% scale() %>% t())
+counts <- cbind(assay(sce1, "counts") %>% t() %>% scale() %>% t(), assay(sce2, "counts") %>% t() %>% scale() %>% t())
+sce <- SingleCellExperiment(assays = list(counts = counts, exprs = exprs), colData = coldata, rowData = rowData(sce1))
+colData(sce)$cluster_id <- factor(colData(sce)$cluster_id, levels = ct)
+metadata(sce)$cluster_codes <- data.frame(custom = colData(sce)$cluster_id)
+
+
+remove(sce1, sce2)
+```
+
+
+# Save combined SCE object
+```{r save SCE}
+saveRDS(sce,file = paste0(path.files.combined, "sce_3pix2_batch2_subclustered_combined.rds"))
+```
+

@@ -1,0 +1,179 @@
+---
+title: "01_Protein_read_data"
+author: "toobiwankenobi"
+date: "2020-08-04"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+## Introduction
+This file will load the single-cell data and store it in an SingleCellExperiment data container. In order to successfully run this script, several .csv files have to provided in the data folder of this repository.
+
+# Preparations
+
+## Load libraries
+
+First, we will load the libraries needed for this part of the analysis.
+
+```{r load-libraries, message=FALSE}
+library(tidyverse)
+library(data.table)
+library(SingleCellExperiment)
+library(rstudioapi)
+library(xlsx)
+library(CATALYST)
+```
+
+## Read the data
+
+```{r load data}
+#Clear R's memory
+rm(list=ls())
+
+#set wd to location of this .Rmd worksheet. ADAPT PATH such that it points from .Rmd location to cpout folder!
+setwd(dirname(getActiveDocumentContext()$path)) 
+path.data = "../Data/cpout_3pix2/"
+path.files <- "../R_Files/cpout_3pix2/"
+path.out <- "../R_out/cpout_3pix2/"
+
+# load the single cell data
+cells <- as.data.frame(fread(file = paste0(path.data, "cell.csv"),stringsAsFactors = FALSE))
+
+# load the image level metadata
+image_mat <- as.data.frame(read.csv(file = paste0(path.data, "Image.csv"),stringsAsFactors = FALSE))
+
+# load the panel information
+###THIS NEEDS FIXING###
+panel_mat <- read.csv(file = paste0(path.data, "panel.csv"), sep= ",",  stringsAsFactors = FALSE )
+#panel_mat <- read.csv(file = paste0(path.data, "example_panel_marker_classes.csv"), sep= ";",  stringsAsFactors = FALSE )
+
+# get an example file that contains the channel order
+tags <- read.csv(file = paste0(path.data, "full_channelmeta.csv"), header = FALSE)
+
+# load acquisition meta data
+acquisition_meta <- read.csv(file = paste0(path.data, "acquisition_metadata.csv"), stringsAsFactors = FALSE)
+
+# load the clinical data. this is a clinical datatable that already contains the ImageNumbers. It has been prepared in the clinical metadata preparation.Rmd script (prepared for RNA and protein dataset separately)
+#clinical_mat <- read.csv("data/data_for_analysis/protein/clinical_data_protein.csv",stringsAsFactors = FALSE)
+```
+
+# Pre-processing
+
+## Generate the counts data frame
+
+```{r get count data }
+cur_counts <- cells[,grepl("Intensity_MeanIntensity_FullStackFiltered",colnames(cells))]
+```
+
+## Get the scaling factor
+the single cell data needs to be multiplied with the scaling factor (16 bit)
+
+```{r scale the count data}
+cur_counts <- cur_counts * image_mat$Scaling_FullStack[1]
+
+# to order the channels according to channel number
+channelNumber <- as.numeric(sub("^.*_c", "", colnames(cur_counts)))
+
+cur_counts <- cur_counts[,order(channelNumber,decreasing = FALSE)]
+```
+
+## Prepare the cell-level metadata
+this data frame contains the metadata for ever single cell and will later on be the colData in the single cell experiment object
+
+the metadata will also have an entry called "Parent_nuclei" which holds information to the ObjectNumber of the Nuclei that the cell was derived from.
+due to the down-scaling of the images some nuclei are lost and thus some cells do not have a Parent_nuclei
+```{r column level metadata}
+#docaspar: add timepoint information to cells. merge acquisition_meta to image_mat, then image_mat to cells
+sub_acquisition_meta <- acquisition_meta %>% dplyr::select(start_timestamp, description)
+"Metadata_start_timestamp" %in% colnames(image_mat)
+image_mat <- merge(image_mat, sub_acquisition_meta, by.x = "Metadata_start_timestamp", by.y = "start_timestamp")
+image_mat_sub <- image_mat %>% dplyr::select(ImageNumber, description) %>% separate(description, c("patient_id", "timepoint", "ROI"))
+
+cells <- merge(cells, image_mat_sub, by= "ImageNumber")
+
+cells[!grepl("Intensity", colnames(cells))] %>% head()
+cells$timepoint_factor <- factor(cells$timepoint, levels = c("Before", "After"))
+
+cell_meta <- DataFrame(CellNumber = cells$ObjectNumber,
+                       sample_id = as.character(cells$ImageNumber),
+                       ImageNumber = cells$ImageNumber,
+                       Center_X = cells$Location_Center_X,
+                       Center_Y = cells$Location_Center_Y,
+                       NumberOfNeighbors = cells$Neighbors_NumberOfNeighbors_8,
+                       Timepoint = cells$timepoint_factor,
+                       condition = cells$timepoint_factor,
+                       Patient_ID = cells$patient_id)
+
+# add a unique cellID to each cell consisting of "dataset"+"ImageNumber"+"ObjectNumber"
+cell_meta$cellID <- paste("cell",cell_meta$ImageNumber,cell_meta$CellNumber, sep = "_")
+
+rownames(cell_meta) <- cell_meta$cellID
+```
+
+## Prepare the row-level metadata (panel/marker information)
+here we prepare all the metadata for the rows in the single cell experiment object (rowData)
+
+```{r row level metadata}
+# assign channel number, matching with the measured channles in cellprofiler
+# the channel number should be double-checked with the channel order in the _full.csv file in the tiff folder to see if the order matches (e.g. Y89 can cause a mismatch)
+
+# the channel numbers are the rownumbers in the "tags" file that we create above
+tags$channel <- as.numeric(rownames(tags))
+colnames(tags) <- c("Metal.Tag","channel")
+
+
+# include the channel information in the panel metadata (panel_mat)
+panel_mat <- merge(panel_mat,tags,by="Metal.Tag")
+
+# now we order the panel metadata by channel. therefore we first modify the column names
+
+panel_mat <- panel_mat[order(panel_mat$channel,decreasing = FALSE),]
+
+# we also revise the nomenclature of the clean targets to not contain special characters like "-" etc
+panel_mat$clean_target <- panel_mat$Target %>% str_replace_all("-", "")
+panel_mat$marker_name <- panel_mat$Target %>% str_replace_all("-", "")
+
+rownames(panel_mat) <- panel_mat$clean_target
+```
+
+# Create SCE object
+
+## Create the single cell experiment object
+
+```{r create single cell object}
+# create the SCE object
+sce <- SingleCellExperiment(assays = list(counts = t(cur_counts)))
+
+# Set marker name as rownames and cellID as colnames
+rownames(sce) <- rownames(panel_mat)
+colnames(sce) <- rownames(cell_meta)
+
+# add the column and row metadata
+colData(sce) <- cell_meta
+rowData(sce) <- panel_mat
+
+ei <- data.frame(cell_meta) %>% dplyr::select(sample_id, condition, Patient_ID)
+rownames(ei) <- NULL
+metadata(sce)$experiment_info <- ei[!duplicated(ei$sample_id),]
+ei(sce)
+# asinh transformed counts as well as add the nuclear count data
+assay(sce, "exprs") <- asinh(counts(sce))
+rowData(sce)
+```
+
+## Assign the clinical data to the metadata slot
+
+```{r}
+#order according to ImageNumber
+# clinical_mat <- clinical_mat[order(clinical_mat$ImageNumber),]
+# metadata(sce) <- as.list(clinical_mat)
+```
+
+## Save the SCE object
+
+```{r save sce object}
+#saveRDS(sce,file = paste0(path, "../SCEobjects/sce_2_3pix2.rds"))
+colData(sce) %>% data.frame
+saveRDS(sce,file = paste0(path.files, "sce_3pix2.rds"))
+```

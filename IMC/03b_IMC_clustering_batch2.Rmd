@@ -1,0 +1,226 @@
+---
+title: "IMC_clustering k20"
+author: "docaspar"
+date: "10/19/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, fig.height = 4.5, fig.width = 8)
+```
+
+# Load libraries
+```{r libs, message=FALSE}
+library(SingleCellExperiment)
+library(tidyverse)
+library(scater)
+library(rstudioapi)
+library(xlsx)
+library(readxl)
+library(cowplot)
+library(CATALYST)
+library(clustree)
+library(Rphenograph)
+library(diffcyt)
+```
+
+# Load SCE object
+New SCE objects are created with 01_Generate_SCE_object.rmd for IMC data. 
+```{r load_sce}
+rm(list = ls())
+
+setwd(dirname(getActiveDocumentContext()$path))
+getwd()
+
+path.data = "../Data/cpout_batch2/"
+path.files <- "../R_Files/cpout_batch2/"
+path.out <- "../R_out/cpout_batch2/"
+
+colvec_pt <- met.brewer("Juarez", 4)[3:4]
+
+ct <- c("Tregs", "memory CD4 T cells", "memory CD8 T cells", "CD8 Temra", "Macrophages", "cDCs", "Mast cells", "Fibroblasts", "Endothelium", "Epidermis", "Smooth muscle cells")
+colvec_ct <- met.brewer("Signac", 19)[c(1, 4:6, 8, 10, 13, 16:19)]
+names(colvec_ct) <- ct
+
+
+sce = readRDS(file = paste0(path.files, "sce_batch2.rds"))
+```
+
+# CATALYST marker_class column
+clustering requires a column called marker_class which identifies the markers to be used in the clustering:
+- "type": yes
+- "state": no
+use the excel file marker_classes_vorlage.xlsx to define primary (save as marker_classes_primary.xlsx) and secondary 
+(save as marker_classes_secondary.xlsx) marker classes.
+```{r set marker_class}
+primary <- read_excel(paste0(path.files, "marker_classes_primary.xlsx"))
+rowdata <- as.data.frame(rowData(sce))
+rowdata <- merge(rowdata, primary, by = "Target")
+rowData(sce) <- DataFrame(rowdata[order(rowdata$channel),])
+
+type_markers(sce) #doing the clustering without cd68 for the moment. if i feel like i am missing endothelial cells, i'll come back to this.
+state_markers(sce)
+```
+
+# SCE object health check
+
+```{r inspect SCE object, message=FALSE, warning=FALSE, fig.height=9, fig.width=16}
+colData(sce)
+rowData(sce)
+assay(sce)[1:5,1:5]
+
+pdf(paste0(path.out, "01_batch2_exploration.pdf"), height = 9, width = 16, onefile = TRUE)
+plotCounts(sce,
+    group_by = "sample_id",
+    color_by = "Timepoint")
+
+set.seed(1234)
+sce <- runDR(sce, dr = "UMAP", features = "type")
+
+plotDR(sce, "UMAP", color_by = "Patient_ID") + 
+    ggtitle("UMAP ld IL-2 in SLE IMC") + 
+    theme(plot.title = element_text(hjust = 0.5)) + 
+    scale_color_manual(values = colvec_pt)
+
+plotDR(sce, "UMAP", color_by = c(type_markers(sce), state_markers(sce)), ncol = round(sqrt(16*length(c(type_markers(sce), state_markers(sce)))/9)), assay = "exprs")
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)), assay = "exprs", facet_by = "Timepoint")
+dev.off()
+```
+
+
+Which markers to include in primary clustering:
+- DNA1&2: I had them included for many versions, they are also important markers in random forest. However, since DNA staining is present in almost all cells, the markers keep the clusters together and prevents better separation.
+- CD163: including CD163 increased performance of the clustering regarding APCs. While CD163 is a great marker for macrophages, we have to keep in mind that other APCs are not detected with the same sensitivity. 
+- CD68: is expressed relatively broadly and hence runs into the same problem as DNA (pulling clusters together instead of separating them). Additionally, it creates a strong separation between two epidermal clusters, which is probably neither real nor relevant.
+This setting looks good in heatmap and UMAP, will still need to check on pixels.
+
+# CATALYST workflow
+Adapting from CATALYST workflow
+
+Requirements for flowSOM clustering  
+- assay called "exprs" containing transformed counts. We use hsin transformed counts, maybe revisit that.
+- rowData column called "marker_class" with "type" for markers used in clustering and "state" for markers indicating state of cells (not used for clustering)
+
+With the current setting (CD163, no DNA/CD68), k = 20 is necessary: at k = 18, clusters 13 and 16 fall together to form a new APC-like cluster 13. at k=20, cluster 13 does not look like a proper APC cluster however. Thus, going to 18 would include cells as APCs that probably are not. If cluster 13 (in m20) acutally is a APC cluster, it can still be manually merged. At that point, based on heatmap, cluster 3 (in m20) should also be considered.
+```{r}
+set.seed(1234)
+phenoresults <- Rphenograph(t(assay(filterSCE(sce, marker_class == "type"), "exprs")), k = 50)
+
+#Add phenograph cluster_ids to sce object
+colData(sce)$pheno <- as.factor(membership(phenoresults[[2]]))
+sce$cluster_id <- as.factor(membership(phenoresults[[2]]))
+metadata(sce)$cluster_codes <- data.frame(
+    custom = factor(levels(as.factor(membership(phenoresults[[2]]))), levels = levels(as.factor(membership(phenoresults[[2]])))))
+
+set.seed(1234)
+sce <- runDR(sce, dr = "UMAP", features = "type")
+
+pdf(paste0(path.out, "02_batch2_primary_phenograph.pdf"), height = 9, width = 16, onefile = TRUE)
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+plotClusterExprs(sce, k = "custom", features = "type")
+
+plotDR(sce, "UMAP", color_by = "pheno") + scale_color_manual(values = unname(cols25()))
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)), assay = "exprs")
+
+dev.off()
+```
+
+```{r flowSOM & Heatmap, message=FALSE, warning=FALSE, fig.width=16, fig.height=9}
+set.seed(1234)
+kinit <- 21
+sce <- cluster(sce, features = type_markers(sce),
+    xdim = 10, ydim = 10, maxK = kinit, seed = 1234)
+
+
+pdf(paste0(path.out, "03_batch2_primary_flowsom.pdf"), height = 9, width = 16, onefile = TRUE)
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = paste0("meta", kinit),
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+plotClusterExprs(sce, k = paste0("meta", kinit), features = "type") + labs(title = "Primary Clustering Marker Expression Histogram")
+
+plotDR(sce, "UMAP", color_by = paste0("meta", kinit)) +scale_color_manual(values = unname(cols25()))
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)), assay = "exprs")
+
+clustree(cluster_codes(sce), prefix = "meta")
+dev.off()
+```
+
+
+```{r put metak in colData}
+code <- cluster_codes(sce)[,c("som100", paste0("meta", kinit))]
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+colData(sce) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+table(colData(sce)[,paste0("meta", kinit)])
+```
+
+
+```{r save SCEobject}
+saveRDS(sce,file = paste0(path.files, "sce_batch2_clustered.rds"))
+```
+
+```{r primary merging}
+(merging_table1 <- read_excel(paste0(path.files, "merged_clusters_primary.xlsx")))
+
+#apply manual merging
+sce <- mergeClusters(sce, k = paste0("meta", kinit), table = merging_table1, id = "merging1")
+
+plotDR(sce, "UMAP", color_by = "merging1") + 
+    labs(title = "UMAP ld IL-2 in SLE IMC", color = "Cell type") + 
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_brewer(palette = "Set1")
+
+code <- cluster_codes(sce)[,c("som100", "merging1")]
+colnames(code) <- c("som100", "primary_clustering")
+coldata <- as.data.frame(colData(sce))
+coldata <- merge(coldata, code, by.x = "cluster_id", by.y = "som100")
+coldata$primary_clustering %>% table()
+
+coldata[coldata$pheno == 7, "primary_clustering"] <- "Tcells"
+colData(sce) <- DataFrame(coldata[order(coldata$ImageNumber, coldata$CellNumber),])
+unique(colData(sce)$primary_clustering)
+
+pdf(paste0(path.out, "04_batch2_primary_merging.pdf"), height = 9, width = 16, onefile = TRUE)
+plotDR(sce, "UMAP", color_by = "primary_clustering") + 
+    labs(title = "UMAP ld IL-2 in SLE IMC", color = "Cell type") + 
+    theme(plot.title = element_text(hjust = 0.5)) +
+    scale_color_manual(values = unname(colvec_ct[c(1,5,7:11)]), breaks = c("Tcells", "APCs", names(colvec_ct[8:11])))
+
+plotExprHeatmap(sce, features = "type",
+    by = "cluster_id", k = "merging1",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+dev.off()
+
+saveRDS(sce,file = paste0(path.files, "sce_batch2_clustered_merged.rds"))
+```
+
+```{r sessionInfo}
+#sessionInfo()
+```
+
+# Archiv
+```{r, eval=FALSE, include=FALSE}
+(design <- model.matrix(~0+ei(sce)$condition))
+
+contrast <- c(-1, 1)
+data.frame(parameters = colnames(design), contrast)
+cluster_codes(sce)
+res_DA <- diffcyt(sce, clustering_to_use = "merging1",
+    analysis_type = "DA", method_DA = "diffcyt-DA-edgeR",
+    design = design, contrast = contrast, verbose = TRUE)
+
+tbl_DA <- data.frame(rowData(res_DA$res)) %>% dplyr::select("cluster_id", "logFC", "p_adj")
+rownames(tbl_DA) <- NULL
+print(data.frame(tbl_DA)[order(tbl_DA$p_adj),])
+
+res_DS <- diffcyt(sce, clustering_to_use = "merging1",
+    analysis_type = "DS", method_DS = "diffcyt-DS-limma",
+    design = design, contrast = contrast, verbose = FALSE, markers_to_test = rowData(sce)$marker_name %in% c("FOXp3", "CD25", "Ki67"))
+tbl_DS <- data.frame(rowData(res_DS$res)) %>% dplyr::select("cluster_id", "marker_id", "logFC", "p_adj")
+rownames(tbl_DS) <- NULL
+print(tbl_DS[order(tbl_DS$p_adj),])
+```
+

@@ -1,0 +1,585 @@
+---
+title: "Flow_CATALYST"
+author: "docaspar"
+date: "12/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, fig.width = 16, fig.height = 9, warning = FALSE, root.dir = ".")
+```
+
+
+
+# Libraries
+```{r libs}
+library(tidyverse)
+library(SingleCellExperiment)
+library(CATALYST)
+library(flowCore)
+library(xlsx)
+library(readxl)
+library(clustree)
+library(diffcyt)
+library(Rphenograph)
+library(edgeR)
+library(MetBrewer)
+library(ggpubr)
+library(pals)
+library(ComplexHeatmap)
+library(rasterpdf)
+library(cowplot)
+```
+
+
+# Set paths
+```{r set paths, warning=FALSE}
+rm(list = ls())
+
+path.data <- "../Data/20220505_Live"
+path.files <- "../Files/"
+path.out <- "../R_out/Unsupervised_10k_final/"
+
+colvec <- met.brewer("Monet",n=20)[c(4,10,13,19,16)]
+
+source("flow_functions.R")
+
+clustvec <- brewer.paired(12)[c(3,1,7,4,10,2,6,9,8,5,11,12)]
+names(clustvec) <- paste(1:12)
+```
+
+# Treg subclustering
+
+Continuing with clustered rather than gated Tregs
+
+## Filter Tregs, change type markers and re-run UMAP
+
+To cluster Tregs based on the total clustering rather than the gated cells, we filter the secondary cluster ids for Tregs. We then change the markers (same as for clustering on manually gated Tregs) and re-create the UMAP.
+
+```{r filter Tregs, fig.height=5, fig.width=8}
+sce <- readRDS(file = paste0(path.files, "SCE_downsammpled_subclustered_10k_2xflowsom.rds"))
+scetregs <- sce[,colData(sce)$secondary == "Treg"]
+
+#treg_markers <- c("CCR7", "CD38", "CD31", "CD45RA", "PD1", "Foxp3", "HLADR", "CD25", "CD127", "TOX") #used this set of markers earlier, moved to the ones in the next line to make it more comparable with scRNAseq
+treg_markers <- c("CCR7", "CD38", "CD31", "CD45RA", "PD1", "HLADR", "CD25", "CD127", "ICOS")
+rowData(scetregs)[rowData(scetregs)$marker_name %in% treg_markers, "marker_class"] <- "type"
+rowData(scetregs)[!rowData(scetregs)$marker_name %in% treg_markers, "marker_class"] <- "state"
+
+type_markers(scetregs)
+state_markers(scetregs)
+
+set.seed(1212) #original seed was 1234
+scetregs <- runDR(scetregs, dr = "UMAP", features = "type", cells = 500)
+
+#pdf(paste0(path.out, "08_Treg_exploration.pdf"), onefile = TRUE, height = 5, width = 8)
+plotDR(scetregs, "UMAP", color_by = "patient_id")
+plotDR(scetregs, "UMAP", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = round(sqrt(16*length(type_markers(scetregs))/9)), assay = "exprs")
+
+plot_density(scetregs, bins = 10, xlim = c(-10,8), ylim = c(-6.1,5)) + 
+  scale_color_manual(values = colvec)
+#dev.off()
+```
+
+
+## Phenograph clustering
+I tried phenograph clusterings with k = 20, 30, 50, 80, 100 and 200. 100 seems to be ideal.
+```{r Treg phenograph}
+scetregs <- phenograph(scetregs, k = 100, scale = FALSE)
+
+# set.seed(1234)
+# phenoresults <- Rphenograph(t(assay(filterSCE(scetregs, marker_class == "type"), "exprs")), k = 100)
+# 
+# #Add phenograph cluster_ids to scetregs object
+# colData(scetregs)$pheno <- as.factor(membership(phenoresults[[2]]))
+# scetregs$cluster_id <- as.factor(membership(phenoresults[[2]]))
+# metadata(scetregs)$cluster_codes <- data.frame(
+#     custom = factor(levels(as.factor(membership(phenoresults[[2]]))), levels = levels(as.factor(membership(phenoresults[[2]])))))
+
+rowData(scetregs)$marker_name
+pdf(paste0(path.out, "09_Treg_subclustering_heatmap.pdf"), onefile = TRUE, height = 5, width = 8)
+plotExprHeatmap(scetregs, features = c("CCR7", "CD45RA", "CD31", "CD25", "ICOS", "CD38", "HLADR",  "PD1", "CCR4", "CCR10"),
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+dev.off()
+```
+
+
+```{r Treg phenograph}
+pdf(paste0(path.out, "09_Treg_subclustering.pdf"), onefile = TRUE, height = 5, width = 8)
+plotExprHeatmap(scetregs, features = "type",
+    by = "cluster_id", k = "custom",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+
+plotDR(scetregs, "UMAP", color_by = "pheno") + scale_color_manual(values = brewer.paired(12)[c(3,2,7,4:6,1,8:12)])
+#plotDR(scetregs, "UMAP", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = round(sqrt(16*length(type_markers(scetregs)+2)/9)), assay = "exprs")
+plotDR(scetregs, "UMAP", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = 4, assay = "exprs")+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+plot_density(scetregs, bins = 10, xlim = c(-10,8), ylim = c(-6.1,5)) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) + 
+  scale_color_manual(values = colvec)
+
+plot_density(scetregs, bins = 13, xlim = c(-10,8), ylim = c(-6.1,5)) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +   
+  scale_color_manual(values = colvec)
+```
+
+
+```{r Treg phenograph, fig.height=5, fig.width=15}
+pdf(paste0(path.out, "density_facet.pdf"), height = 5, width = 15, onefile = TRUE)
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 10, xlim = c(-10,8), ylim = c(-6.1,5)) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = colvec)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5)) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = colvec)
+dev.off()
+```
+
+
+```{r Treg phenograph, fig.height=5, fig.width=6}
+pdf(paste0(path.out, "density_nofacet.pdf"), height = 5, width = 6, onefile = TRUE)
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 10, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = colvec)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = colvec)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = c("darkgreen", "blue", "red"),)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = c("blue", "red"),)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = c("darkgreen", "firebrick3", "tomato4"),)
+
+plot_density(filterSCE(scetregs, scetregs$condition %in% c("V2", "V3")), bins = 13, xlim = c(-10,8), ylim = c(-6.1,5), facet = FALSE) + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank()) +  
+  scale_color_manual(values = c("firebrick3", "tomato4"),)
+dev.off()
+```
+
+```{r, fig.height=5, fig.width=6}
+pdf(paste0(path.out, "dotplot_nofacet.pdf"), height = 5, width = 6, onefile = TRUE)
+plotDR(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), "UMAP", color_by = "condition")+
+  scale_color_manual(values = c("darkgreen", "blue", "red"))+
+  theme_cowplot()
+
+plotDR(filterSCE(scetregs, scetregs$condition %in% c("V2", "V3")), "UMAP", color_by = "condition")+
+  scale_color_manual(values = c("blue", "red"))+
+  theme_cowplot()
+dev.off()
+```
+
+
+```{r, fig.height=5, fig.width=15}
+pdf(paste0(path.out, "dotplot_facet.pdf"), height = 5, width = 15, onefile = TRUE)
+plotDR(filterSCE(scetregs, scetregs$condition %in% c("H", "V2", "V3")), "UMAP", color_by = "condition", facet_by = "condition")+
+  scale_color_manual(values = c("darkgreen", "blue", "red"))+
+  theme_cowplot()+
+  theme(strip.background = element_blank())
+dev.off()
+```
+
+
+```{r, fig.height=5, fig.width=10}
+pdf(paste0(path.out, "dotplot_facet_woH.pdf"), height = 5, width = 10, onefile = TRUE)
+plotDR(filterSCE(scetregs, scetregs$condition %in% c("V2", "V3")), "UMAP", color_by = "condition", facet_by = "condition")+
+  scale_color_manual(values = c("blue", "red"))+
+  theme_cowplot()+
+  theme(strip.background = element_blank())
+dev.off()
+```
+
+```{r Treg phenograph}
+#raster_pdf(filename = paste0(path.out, "09b Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 11, res = 200)
+plotDR(scetregs, "UMAP", color_by = "pheno") +
+  scale_color_manual(values = brewer.paired(12)[c(3,1,7,4,10,2,6,9,8,5,11,12)]) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#dev.off()
+
+
+markervec <- c("CD45RA", "CCR7", "CD31", "CD25", "CD127", "CD38", "HLADR", "PD1", "ICOS", "Ki67", "Foxp3")
+#raster_pdf(filename = paste0(path.out, "09c Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 14, res = 200)
+plotDR(scetregs, "UMAP", color_by = markervec, ncol = 4, assay = "exprs")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#dev.off()
+
+markervec <- c("CD45RA", "CCR7", "CD31", "CD25", "CD127", "CD38", "HLADR", "PD1", "ICOS", "Ki67", "Foxp3")
+#raster_pdf(filename = paste0(path.out, "09c2 Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 14, res = 200)
+plotDR(scetregs, "UMAP", color_by = markervec, ncol = 6, assay = "exprs")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "09d Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 14, res = 200)
+plotDR(scetregs, "UMAP", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = 4, assay = "exprs")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "09e Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 18, res = 200)
+plotDR(scetregs, "UMAP", color_by = c("HLADR", "CD38"), ncol = 2, assay = "exprs")+
+  theme_cowplot()+
+  theme(strip.background = element_blank())
+#dev.off()
+
+#raster_pdf(filename = paste0(path.out, "09f Subclustered_UMAP_combined_raster.pdf"), height = 9, width = 11, res = 200)
+plotDR(scetregs, "UMAP", color_by = "pheno") +
+  scale_color_manual(values = brewer.paired(12)[c(3,1,7,4,10,2,6,9,8,5,11,12)]) +
+  theme_cowplot()
+#dev.off()
+
+#pdf(paste0(path.out, "09h Subclustered_UMAP_combined_raster.pdf"), height = 5, width = 7)
+plot_density(x = scetregs, color_by = "condition", colvec = colvec, xlim = c(-7.6, 10), ylim = c(-6, 6))+
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "none")
+#dev.off()
+```
+
+```{r}
+act <- scetregs[,colData(scetregs)$pheno %in% c(7,9,12)]
+a <- calculate_DS(act, cluster_column = "pheno", markers = rownames(act))
+
+a
+ggplot(a, aes(x = pheno, y = mfi))+
+  geom_boxplot()+
+  facet_wrap("marker", scales = "free_y")
+```
+
+
+```{r}
+act <- scetregs[,colData(scetregs)$pheno %in% c(7,9,12)]
+df <- cbind(assay(act, "exprs") %>% t(), colData(act)) %>% as.data.frame()
+ggplot(df, aes(x = CD25, y = Ki67))+
+  geom_point(aes(col = pheno), size = 0.5)+
+  xlim(c(0, NA))+
+  geom_smooth()+
+  scale_color_manual(values = clustvec)
+```
+
+
+
+```{r}
+scetregs <- runDR(scetregs, dr = "DiffusionMap", features = "type", cells = 500)
+plotDR(scetregs, "DiffusionMap", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = round(sqrt(16*length(type_markers(scetregs))/9)), assay = "exprs")
+plotDR(scetregs, "DiffusionMap", color_by = "pheno") + scale_color_manual(values = unname(cols25()))
+```
+
+
+
+
+```{r DA}
+dtp <- colData(scetregs)[c("pheno", "condition", "patient_id")] %>% 
+  table() %>% 
+  as.data.frame() %>%
+  mutate("sample_id" = paste(patient_id, condition, sep = "_")) %>%
+  dplyr::rename("counts" = Freq)
+
+totdtp <- colData(scetregs)[c("sample_id")] %>% table() %>% data.frame() %>% dplyr::rename("sample_id" = Var1, "totcounts" = Freq)
+dtp <- merge(dtp, totdtp) %>% mutate("Freq" = counts/totcounts*100)
+write.xlsx(dtp, file = paste0(path.out, "Treg_subcluster_abundance.xlsx"), row.names = FALSE)
+
+pdf(paste0(path.out, "10_Treg_Cluster_Abundance.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+comparisons <- list(c("V2", "V3"), c("V8", "V9"), c("V2", "V9"))
+ggplot(dtp, aes(x = condition, y = Freq, col = condition))+
+  geom_violin(aes(fill = condition), alpha = 0.5, draw_quantiles = 0.5)+
+  #geom_jitter(width = 0.1)+
+  geom_point()+
+  geom_line(aes(group = patient_id), col = "grey")+
+  facet_wrap("pheno", scales = "free_y")+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Cluster Abundance per Time point", y = "Frequency (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+# plotAbundances(scetregs, k = "custom", group_by = "condition")
+# plotAbundances(filterSCE(scetregs, condition != "H"), k = "custom", group_by = "patient_id")
+dev.off()
+```
+
+
+
+
+## Differential state analysis
+Combining the expression data frame with the coldata gives arcsine transformed values. could take non-transformed values (i.e. "counts" assay) to get more familiar results.
+```{r DS}
+mfidf <- cbind(assay(scetregs, "exprs") %>% t() %>% as.data.frame(), 
+               colData(scetregs) %>% as.data.frame()) %>% 
+  dplyr::select(rownames(scetregs), "sample_id", "pheno")
+
+mfidfga <- mfidf %>% 
+  dplyr::group_by(sample_id, pheno) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE) %>%
+  separate(sample_id, c("patient_id", "condition")) %>%
+  gather(key = "marker", value = "mfi", rownames(scetregs))
+mfidfga$condition <- mfidfga$condition %>% factor(levels = c("H", "V2", "V3", "V8", "V9"))
+
+pdf(paste0(path.out, "11_Treg_Marker_Expression.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+# ggplot(mfidfga, aes(x = pheno, y = mfi, col = condition, fill = condition))+
+#     geom_boxplot(alpha = 0.5)+
+#     geom_point(position = position_dodge(width = 0.75))+
+#     #geom_line(aes(group = patient_id), col = "grey")+
+#     facet_wrap("marker", scales = "free_y")+
+#     theme_bw()+
+#     labs(col = "Time point", fill = "Time point", title = "Marker Expression on PBMCs", y = "MFI")+
+#     theme(axis.title.x = element_blank(),
+#           plot.title = element_text(hjust = 0.5),
+#           strip.background = element_blank(),
+#           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+#     scale_color_manual(values = colvec)+
+#     scale_fill_manual(values = colvec)+
+#     #stat_compare_means(comparisons = list(c("MORNING", "EVENING")), method = "t.test", paired = TRUE)+
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+# for(mrkr in unique(mfidfga$marker)){
+#   p1 <- ggplot(mfidfga %>% dplyr::filter(marker == mrkr), aes(x = condition, y = mfi, col = condition, fill = condition))+
+#     geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+#     geom_point()+
+#     geom_line(aes(group = patient_id), col = "grey")+
+#     facet_wrap("pheno", scales = "free_y")+
+#     theme_bw()+
+#     labs(col = "Time point", fill = "Time point", title = paste0(mrkr, " MFI per cluster"), y = paste0("MFI (", mrkr, ")"))+
+#     theme(axis.title.x = element_blank(),
+#           plot.title = element_text(hjust = 0.5),
+#           strip.background = element_blank())+
+#     scale_color_manual(values = colvec)+
+#     scale_fill_manual(values = colvec)+
+#     stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+ #CD4 Temra are not present in all samples, so the paired testing will fail there. still did the testing paired.
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+#     print(p1)
+# }
+for(ph in unique(mfidfga$pheno)){
+  p1 <- ggplot(mfidfga %>% dplyr::filter(pheno == ph), aes(x = condition, y = mfi, col = condition, fill = condition))+
+    geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+    geom_point()+
+    geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("marker", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = paste0("Phenograph cluster ", ph, " MFI"), y = "MFI")+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())+
+    scale_color_manual(values = colvec)+
+    scale_fill_manual(values = colvec)+
+    stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+ #CD4 Temra are not present in all samples, so the paired testing will fail there. still did the testing paired.
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+    print(p1)
+}
+dev.off()
+```
+
+
+```{r, eval=FALSE}
+(merging_table <- read_excel(paste0(path.files, "merged_clusters_tregs2.xlsx")))
+                            
+scetregs <- mergeClusters(scetregs, k = "custom", table = merging_table, id = "tregs", overwrite = TRUE)
+
+code <- cluster_codes(scetregs)[,c("custom", "tregs")]
+coldata <- as.data.frame(colData(scetregs))
+coldata <- merge(coldata, code, by.x = "pheno", by.y = "custom")
+colData(scetregs) <- DataFrame(coldata[order(coldata$cell_id),])
+
+pdf(paste0(path.out, "12_Treg_merging.pdf"), onefile = TRUE, height = 9, width = 16)
+plotDR(scetregs, "UMAP", color_by = "tregs") +scale_color_brewer(palette = "Paired")
+plotDR(scetregs, "UMAP", color_by = "pheno") + scale_color_manual(values = unname(cols25()))
+plotDR(scetregs, "UMAP", color_by = type_markers(scetregs), ncol = round(sqrt(16*length(type_markers(scetregs))/9)))
+plotExprHeatmap(scetregs, features = "type",
+    by = "cluster_id", k = "tregs",
+    scale = "first", q = 0.01, perc = TRUE, col_dend = FALSE, bars = TRUE, col_clust = FALSE)
+dev.off()
+```
+
+
+```{r DA, eval=FALSE}
+dtp <- colData(scetregs)[c("tregs", "condition", "patient_id")] %>% 
+  table() %>% 
+  as.data.frame() %>%
+  mutate("sample_id" = paste(patient_id, condition, sep = "_")) %>%
+  dplyr::rename("counts" = Freq)
+
+totdtp <- colData(scetregs)[c("sample_id")] %>% table() %>% data.frame() %>% dplyr::rename("sample_id" = Var1, "totcounts" = Freq)
+dtp <- merge(dtp, totdtp) %>% mutate("Freq" = counts/totcounts*100)
+
+pdf(paste0(path.out, "13_Treg_merged_Cluster_Abundance.pdf"), height = 5, width = 8, onefile = TRUE) #to save all the plots in one file
+comparisons <- list(c("V2", "V3"), c("V8", "V9"), c("V2", "V9"))
+ggplot(dtp, aes(x = condition, y = Freq, col = condition))+
+  geom_violin(aes(fill = condition), alpha = 0.5, draw_quantiles = 0.5)+
+  #geom_jitter(width = 0.1)+
+  geom_point()+
+  geom_line(aes(group = patient_id), col = "grey")+
+  facet_wrap("tregs", scales = "free_y")+
+  theme_bw()+
+  labs(col = "Time point", fill = "Time point", title = "Cluster Abundance per Time point", y = "Frequency (%)")+
+  theme(axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        strip.background = element_blank())+
+  scale_color_manual(values = colvec)+
+  scale_fill_manual(values = colvec)+
+  stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+plotAbundances(scetregs, k = "tregs", group_by = "condition")
+plotAbundances(filterSCE(scetregs, condition != "H"), k = "tregs", group_by = "patient_id")
+dev.off()
+```
+
+
+
+## Differential state analysis
+Combining the expression data frame with the coldata gives arcsine transformed values. could take non-transformed values (i.e. "counts" assay) to get more familiar results.
+```{r DS, eval=FALSE}
+mfidf <- cbind(assay(scetregs, "exprs") %>% t() %>% as.data.frame(), colData(scetregs) %>% as.data.frame()) %>% dplyr::select(rownames(scetregs), "sample_id", "tregs")
+mfidfga <- mfidf %>% 
+  dplyr::group_by(sample_id, tregs) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE) %>%
+  separate(sample_id, c("patient_id", "condition")) %>%
+  gather(key = "marker", value = "mfi", rownames(scetregs))
+mfidfga$condition <- mfidfga$condition %>% factor(levels = c("H", "V2", "V3", "V8", "V9"))
+
+pdf(paste0(path.out, "14_Treg_merged_marker_expression.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+# ggplot(mfidfga, aes(x = tregs, y = mfi, col = condition, fill = condition))+
+#     geom_boxplot(alpha = 0.5)+
+#     geom_point(position = position_dodge(width = 0.75))+
+#     #geom_line(aes(group = patient_id), col = "grey")+
+#     facet_wrap("marker", scales = "free_y")+
+#     theme_bw()+
+#     labs(col = "Time point", fill = "Time point", title = "Marker Expression on PBMCs", y = "MFI")+
+#     theme(axis.title.x = element_blank(),
+#           plot.title = element_text(hjust = 0.5),
+#           strip.background = element_blank(),
+#           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+#     scale_color_manual(values = colvec)+
+#     scale_fill_manual(values = colvec)+
+#     #stat_compare_means(comparisons = list(c("MORNING", "EVENING")), method = "t.test", paired = TRUE)+
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+
+# for(mrkr in unique(mfidfga$marker)){
+#   p1 <- ggplot(mfidfga %>% dplyr::filter(marker == mrkr), aes(x = condition, y = mfi, col = condition, fill = condition))+
+#     geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+#     geom_point()+
+#     geom_line(aes(group = patient_id), col = "grey")+
+#     facet_wrap("tregs", scales = "free_y")+
+#     theme_bw()+
+#     labs(col = "Time point", fill = "Time point", title = paste0(mrkr, " MFI per cluster"), y = paste0("MFI (", mrkr, ")"))+
+#     theme(axis.title.x = element_blank(),
+#           plot.title = element_text(hjust = 0.5),
+#           strip.background = element_blank())+
+#     scale_color_manual(values = colvec)+
+#     scale_fill_manual(values = colvec)+
+#     stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+ #CD4 Temra are not present in all samples, so the paired testing will fail there. still did the testing paired.
+#     scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+#     print(p1)
+# }
+for(ph in unique(mfidfga$tregs)){
+  p1 <- ggplot(mfidfga %>% dplyr::filter(tregs == ph), aes(x = condition, y = mfi, col = condition, fill = condition))+
+    geom_violin(alpha = 0.5, draw_quantiles = 0.5)+
+    geom_point()+
+    geom_line(aes(group = patient_id), col = "grey")+
+    facet_wrap("marker", scales = "free_y")+
+    theme_bw()+
+    labs(col = "Time point", fill = "Time point", title = paste0("Phenograph cluster ", ph, " MFI"), y = "MFI")+
+    theme(axis.title.x = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          strip.background = element_blank())+
+    scale_color_manual(values = colvec)+
+    scale_fill_manual(values = colvec)+
+    stat_compare_means(comparisons = comparisons, method = "t.test", paired = TRUE)+
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15)))
+    print(p1)
+}
+dev.off()
+```
+
+```{r}
+coldata.sce <- colData(sce)
+coldata.tregs <- colData(scetregs)
+coldata <- merge(coldata.sce, coldata.tregs[,c("cell_id", "pheno")], by = "cell_id", all = TRUE)
+coldata$secondary <- as.character(coldata$secondary)
+coldata$pheno <- as.character(coldata$pheno)
+coldata[is.na(coldata$pheno), "pheno"] <- coldata[is.na(coldata$pheno), "secondary"]
+coldata$pheno <- factor(coldata$pheno, c(paste(1:12), "Tcon", "CD8 T cells", "DN T cells", "DP T cells", "Dendritic cells", "classical Monocytes", "intermediate Monocytes", "non-classical Monocytes", "CD19 B cells", "CD56bright NK cells", "CD56dim NK cells", "other PBMCs"))
+
+colData(sce) <- DataFrame(coldata[order(coldata$cell_id),])
+
+pdf(paste0(path.out, "15_Treg_Backclustering.pdf"), height = 9, width = 16, onefile = TRUE) #to save all the plots in one file
+plotDR(sce, "UMAP", color_by = "pheno") +scale_color_manual(values = unname(cols25()))
+plotDR(sce, "UMAP", color_by = type_markers(sce), ncol = round(sqrt(16*length(type_markers(sce))/9)))
+#dev.off()
+
+scecd4 <- sce[,colData(sce)$primary == "CD4 T cells"]
+
+cd4_markers <- c("CD127", "CD25", "Foxp3")
+rowData(scecd4)[rowData(scecd4)$marker_name %in% cd4_markers, "marker_class"] <- "type"
+rowData(scecd4)[!rowData(scecd4)$marker_name %in% cd4_markers, "marker_class"] <- "state"
+
+type_markers(scecd4)
+
+set.seed(1234)
+scecd4 <- runDR(scecd4, dr = "UMAP", features = "type", cells = 500)
+plotDR(scecd4, "UMAP", color_by = c(type_markers(scetregs), "Foxp3", "Ki67"), ncol = 6, assay = "exprs")
+plotDR(scecd4, "UMAP", color_by = "pheno", assay = "exprs")+scale_color_manual(values = unname(cols25()))
+dev.off()
+```
+
+```{r}
+flowsom(x = scetregs, markers = type_markers(scetregs), )
+
+
+
+
+
+
+```
+
